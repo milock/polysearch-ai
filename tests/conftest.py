@@ -25,6 +25,24 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_live)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ratelimit_ledger(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point the shared rate-limit ledger at a temp dir for every test.
+
+    The provider seams route through ``ratelimit.acquire`` against a default
+    limiter whose state dir is ``~/.cache/polysearch/ratelimit/``. Redirect it
+    per-test so the suite never touches the real cache and stays hermetic.
+    """
+    from polysearch import ratelimit
+
+    ledger = tmp_path_factory.mktemp("ratelimit")
+    monkeypatch.setattr(
+        ratelimit, "_default_limiter", ratelimit.RateLimiter(state_dir=ledger)
+    )
+
+
 @pytest.fixture
 def project_root() -> Path:
     """Path to the polysearch project root (the parent of `tests/`)."""
