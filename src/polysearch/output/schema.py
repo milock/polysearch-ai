@@ -60,9 +60,15 @@ class VerificationReport(BaseModel):
     undated: int
     skipped_budget: int
     fetch_blocked: int = 0
+    blocked_sources: int = 0
     results: list[VerificationResult]
     total_cost_usd: float
     total_duration_ms: int
+    # Claim-level rollup (a claim is supported when each of its numbers/quotes
+    # matches in at least one cited source). recovery_pass.merge_reports sums
+    # these across passes.
+    claims_total: int = 0
+    claims_supported: int = 0
     # True when Firecrawl reported 402/credits-exhausted at any point in the run.
     credits_exhausted_hit: bool = False
 
@@ -98,6 +104,9 @@ class CoverageVerdict(BaseModel):
     followup_queries: list[str] = []
     needs_deeper_verification: bool = False
     reasoning: str = ""
+    # Set (non-None) when the evaluator response could not be parsed — the
+    # refinement loop reads this as a graceful-abort signal.
+    parse_error: str | None = None
 
 
 class RefinementTrace(BaseModel):
@@ -109,6 +118,9 @@ class RefinementTrace(BaseModel):
     new_sources: int = 0
     new_claims: int = 0
     cost_usd: float = 0.0
+    # Why the loop stopped this iteration: goal_met|cost_ceiling|dry|parse_abort|
+    # no_new_queries. Rendered into the report's stop note.
+    stopped_reason: str | None = None
 
 
 class PipelineReport(BaseModel):

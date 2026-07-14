@@ -90,7 +90,35 @@ def test_verification_report_roundtrip_and_phase_a_fields() -> None:
     )
     # Phase A additions default correctly.
     assert report.fetch_blocked == 0
+    assert report.blocked_sources == 0
+    assert report.claims_total == 0
+    assert report.claims_supported == 0
     assert report.credits_exhausted_hit is False
+    assert _roundtrip(report) == report
+
+
+def test_verification_report_claim_rollup_roundtrip() -> None:
+    report = VerificationReport(
+        total_citations=5,
+        verified_ok=4,
+        broken=0,
+        quote_mismatches=0,
+        number_mismatches=1,
+        paywalled=0,
+        undated=0,
+        skipped_budget=0,
+        fetch_blocked=1,
+        blocked_sources=2,
+        results=[],
+        total_cost_usd=0.02,
+        total_duration_ms=500,
+        claims_total=3,
+        claims_supported=2,
+        credits_exhausted_hit=True,
+    )
+    assert report.blocked_sources == 2
+    assert report.claims_total == 3
+    assert report.claims_supported == 2
     assert _roundtrip(report) == report
 
 
@@ -129,6 +157,13 @@ def test_coverage_verdict_roundtrip() -> None:
         needs_deeper_verification=True,
         reasoning="thin coverage",
     )
+    assert v.parse_error is None
+    assert _roundtrip(v) == v
+
+
+def test_coverage_verdict_parse_error_roundtrip() -> None:
+    v = CoverageVerdict(goal_met=False, parse_error="evaluator returned non-JSON")
+    assert v.parse_error == "evaluator returned non-JSON"
     assert _roundtrip(v) == v
 
 
@@ -142,6 +177,17 @@ def test_refinement_trace_roundtrip() -> None:
         new_claims=2,
         cost_usd=0.25,
     )
+    assert t.stopped_reason is None
+    assert _roundtrip(t) == t
+
+
+def test_refinement_trace_stopped_reason_roundtrip() -> None:
+    t = RefinementTrace(
+        iteration=2,
+        verdict=CoverageVerdict(goal_met=False),
+        stopped_reason="cost_ceiling",
+    )
+    assert t.stopped_reason == "cost_ceiling"
     assert _roundtrip(t) == t
 
 
