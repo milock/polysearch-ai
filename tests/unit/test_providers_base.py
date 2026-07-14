@@ -136,6 +136,33 @@ def test_build_providers_community_is_a_list() -> None:
     assert isinstance(providers.community_sources, list)
 
 
+def test_community_sources_degrade_to_skip_when_adapters_missing(
+    monkeypatch: object,
+) -> None:
+    """A missing ``community.adapters`` module must skip the layer, not raise.
+
+    Forces the ``from polysearch.community import adapters`` import to fail even
+    once the module later ships, and sets both key-gated credentials — the
+    result must still be an empty list (degrade-to-skip), never an exception or a
+    null append.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        fromlist = args[2] if len(args) >= 3 else kwargs.get("fromlist")
+        if name == "polysearch.community" and fromlist and "adapters" in fromlist:
+            raise ImportError("adapters not present yet")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)  # type: ignore[attr-defined]
+
+    settings = Settings(youtube_api_key="yt-1", scrapecreators_api_key="sc-1")
+    providers = build_providers(settings)
+    assert providers.community_sources == []
+
+
 def test_null_providers_registered_as_community_sources_protocol() -> None:
     # CommunitySource is a runtime-checkable protocol; the no-keys list is empty
     # but the protocol itself must be importable and checkable.

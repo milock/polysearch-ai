@@ -198,7 +198,7 @@ def _build_deep_research(settings: Settings) -> ResearchProvider | None:
     if not (settings.enable_deep_research and settings.perplexity_api_key):
         return None
     try:
-        from polysearch.providers.perplexity import DeepResearchProvider
+        from polysearch.providers.deep_research import DeepResearchProvider
     except ImportError:
         return None
     return DeepResearchProvider(settings)
@@ -217,13 +217,13 @@ def _build_grounder(settings: Settings) -> WebGrounder:
 def _build_synthesizer(settings: Settings) -> Synthesizer:
     if settings.openai_api_key:
         try:
-            from polysearch.providers.synthesis import OpenAISynthesizer
+            from polysearch.providers.synthesizers import OpenAISynthesizer
         except ImportError as exc:
             return NullSynthesizer(f"openai synthesizer unavailable: {exc}")
         return OpenAISynthesizer(settings)
     if settings.anthropic_api_key:
         try:
-            from polysearch.providers.synthesis import AnthropicSynthesizer
+            from polysearch.providers.synthesizers import AnthropicSynthesizer
         except ImportError as exc:
             return NullSynthesizer(f"anthropic synthesizer unavailable: {exc}")
         return AnthropicSynthesizer(settings)
@@ -241,33 +241,43 @@ def _build_verifier(settings: Settings) -> CitationVerifier:
 
 
 def _build_community_sources(settings: Settings) -> list[CommunitySource]:
-    """Instantiate one community source per available connector credential.
+    """Assemble the community-signal layer from ``community/adapters.py``.
 
-    Each source is lazy-imported and skipped (rather than failing the bundle) if
-    its module is not yet present. With no connector keys this returns ``[]``.
+    Every adapter lives in the single canonical ``community.adapters`` module.
+    Two classes of source:
+
+    - **Keyless (any-tier):** ``RedditSource`` (unauthenticated fallback),
+      ``HackerNewsSource``, ``BlueskySource``, and ``GitHubSource`` (unauth)
+      activate at ANY install tier — they are attempted unconditionally and use
+      credentials only to lift rate limits when present.
+    - **Key-gated:** ``YouTubeSource`` (needs ``youtube_api_key``) and
+      ``XSource`` (needs ``scrapecreators_api_key``) are appended only when their
+      credential is set.
+
+    The whole layer degrades to *skip* (not a null append) when a source — or the
+    ``adapters`` module itself — is not yet present, so today's no-keys install
+    returns ``[]`` and the keyless sources light up automatically once the module
+    ships, with no changes here.
     """
     sources: list[CommunitySource] = []
-    if settings.reddit_client_id and settings.reddit_client_secret:
-        try:
-            from polysearch.community.reddit import RedditSource
+    try:
+        from polysearch.community import adapters
+    except ImportError:
+        return sources
 
-            sources.append(RedditSource(settings))
-        except ImportError:
-            pass
-    if settings.github_token:
-        try:
-            from polysearch.community.github import GitHubSource
+    def _add(class_name: str) -> None:
+        cls = getattr(adapters, class_name, None)
+        if cls is not None:
+            sources.append(cls(settings))
 
-            sources.append(GitHubSource(settings))
-        except ImportError:
-            pass
+    # Keyless adapters — active at any tier.
+    for name in ("RedditSource", "HackerNewsSource", "BlueskySource", "GitHubSource"):
+        _add(name)
+    # Key-gated adapters.
     if settings.youtube_api_key:
-        try:
-            from polysearch.community.youtube import YouTubeSource
-
-            sources.append(YouTubeSource(settings))
-        except ImportError:
-            pass
+        _add("YouTubeSource")
+    if settings.scrapecreators_api_key:
+        _add("XSource")
     return sources
 
 
@@ -275,7 +285,7 @@ def _build_linkedin(settings: Settings) -> CommunitySource | None:
     if not settings.scrapecreators_api_key:
         return None
     try:
-        from polysearch.community.linkedin import LinkedInSource
+        from polysearch.providers.linkedin import LinkedInEnricher
     except ImportError:
         return None
-    return LinkedInSource(settings)
+    return LinkedInEnricher(settings)
