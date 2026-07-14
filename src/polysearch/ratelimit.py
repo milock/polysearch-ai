@@ -61,6 +61,20 @@ DEFAULT_RPM: dict[str, float | None] = {
 _EXEMPT_PROVIDERS = {p for p, rpm in DEFAULT_RPM.items() if rpm is None}
 
 _DEFAULT_BACKOFF_SECONDS = 5.0  # used by record_429 when no Retry-After given
+# Clamp the backoff a 429 can impose. A hostile or malformed Retry-After (e.g.
+# 86400) would otherwise be written straight into ``blocked_until``, pinning the
+# shared bucket for that whole duration across every process — a single poisoned
+# ledger entry stalls all callers. Cap it so no one 429 can block for more than
+# a few minutes.
+_MAX_BACKOFF_SECONDS = 300.0
+# Cap a single acquire() sleep so a ``blocked_until`` written by another process
+# (including a pre-clamp poisoned one) is re-checked periodically rather than
+# slept through in one shot — the acquire re-reads the ledger and proceeds as
+# soon as the block clears, instead of blindly sleeping the full remaining wait.
+# One WINDOW is the ceiling: a legitimate within-window rate wait never exceeds
+# it (so normal waits stay a single sleep), while a longer wait can only come
+# from a 429 backoff / poisoned ``blocked_until`` — exactly what we want to chunk.
+_MAX_SLEEP_SECONDS = WINDOW_SECONDS
 _LOCK_TIMEOUT_SECONDS = 2.0
 _LOCK_POLL_SECONDS = 0.05
 
@@ -251,7 +265,7 @@ class RateLimiter:
             wait = await asyncio.to_thread(self._try_reserve, provider, limit)
             if wait <= 0:
                 break
-            await self._sleep(wait)
+            await self._sleep(min(wait, _MAX_SLEEP_SECONDS))
         yield
 
     @contextlib.contextmanager
@@ -264,7 +278,7 @@ class RateLimiter:
             wait = self._try_reserve(provider, limit)
             if wait <= 0:
                 break
-            self._sleep_sync(wait)
+            self._sleep_sync(min(wait, _MAX_SLEEP_SECONDS))
         yield
 
     def record_429(self, provider: str, retry_after: float | None = None) -> None:
@@ -274,6 +288,7 @@ class RateLimiter:
         if provider in _EXEMPT_PROVIDERS:
             return
         delay = retry_after if retry_after and retry_after > 0 else _DEFAULT_BACKOFF_SECONDS
+        delay = min(delay, _MAX_BACKOFF_SECONDS)
         now = self._clock()
         blocked_until = now + delay
         try:

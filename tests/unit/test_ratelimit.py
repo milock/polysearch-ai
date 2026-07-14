@@ -123,6 +123,44 @@ async def test_record_429_default_backoff_when_no_retry_after(tmp_path):
 
 
 # -----------------------------------------------------------------------------
+# Poisoned-ledger defenses (clamp + bounded per-iteration sleep)
+# -----------------------------------------------------------------------------
+
+
+async def test_record_429_clamps_hostile_retry_after(tmp_path):
+    clock = FakeClock()
+    limiter = _make_limiter(tmp_path, clock=clock)
+
+    limiter.record_429("perplexity", retry_after=86_400.0)  # a full day
+
+    state = json.loads((tmp_path / "perplexity.json").read_text())
+    # Clamped to the cap — one 429 can never pin the shared bucket for hours.
+    assert state["blocked_until"] == pytest.approx(clock.now + 300.0)
+
+
+async def test_acquire_caps_sleep_against_poisoned_ledger(tmp_path):
+    clock = FakeClock()
+    sleep = _fake_sleep_factory(clock)
+    limiter = _make_limiter(tmp_path, clock=clock, sleep=sleep)
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    # Simulate a pre-clamp poisoned ledger: a blocked_until far past a single
+    # window, as an OLD process could have written before this fix landed.
+    (tmp_path / "perplexity.json").write_text(
+        json.dumps({"timestamps": [], "blocked_until": clock.now + 90.0})
+    )
+
+    async with limiter.acquire("perplexity", rpm=50):
+        pass
+
+    # Several window-capped sleeps — the ledger is re-read each loop and the
+    # acquire proceeds once the block clears — rather than one uncapped 90s sleep.
+    assert sleep.calls  # it did wait for the block
+    assert max(sleep.calls) <= ratelimit.WINDOW_SECONDS
+    assert len(sleep.calls) >= 2
+
+
+# -----------------------------------------------------------------------------
 # Corrupt state
 # -----------------------------------------------------------------------------
 
