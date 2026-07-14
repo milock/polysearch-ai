@@ -121,9 +121,9 @@ Each key turns on another layer. A run uses whatever is present and skips the re
 |---|---|---|---|
 | **0** | `PERPLEXITY_API_KEY` | Decomposed sub-question research, returned as a cited report | ~$0.10–$0.50 |
 | **1** | Firecrawl key + a synthesis model (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) | Web grounding, cross-source synthesis, and citation verification | ~$0.50–$2.00 |
-| **2** | One or more source connectors (`SCRAPECREATORS_API_KEY`, `YOUTUBE_API_KEY`, `GITHUB_TOKEN`, `REDDIT_CLIENT_ID`/`_SECRET`, `POLYSEARCH_X_HANDLES`) | Higher community coverage and rate limits, plus X and YouTube | Tier 1 + each connector's own cost |
+| **2** | One or more source connectors (`SCRAPECREATORS_API_KEY`, `YOUTUBE_API_KEY`, `GITHUB_TOKEN`, `REDDIT_CLIENT_ID`/`_SECRET`) | Higher community coverage and rate limits, plus X and YouTube | Tier 1 + each connector's own cost |
 
-The community layer's keyless sources (Reddit, Hacker News, Bluesky, GitHub) run at any tier without a key; connectors raise their rate limits and add the key-gated sources. Run `polysearch --diagnose` to see which layers are active for your current keys.
+The community layer's keyless sources (Reddit, Hacker News, Bluesky, GitHub) run at any tier without a key; connectors raise their rate limits and add the key-gated sources. The X adapter needs `SCRAPECREATORS_API_KEY` plus a watch list of handles set via `POLYSEARCH_X_HANDLES` (that is configuration, not a credential). Run `polysearch --diagnose` to see which layers are active for your current keys.
 
 ---
 

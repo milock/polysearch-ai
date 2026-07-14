@@ -1,9 +1,9 @@
-"""Recovery pass — automated version of the manual sonar-pro rescue.
+"""Recovery pass — re-source weakly-verified claims before the run gives up.
 
-Every weak pipeline run used to end the same way: the caller saw
-"1/40 citations verified", then hand-ran 3-4 scoped sonar-pro queries with
-anti-fabrication instructions to re-source the load-bearing claims. This module
-runs that rescue inside the pipeline itself.
+When a first verification pass comes back weak, this module re-sources the
+failed claims with a few scoped Perplexity queries so a better citation can
+replace a dead or mismatched one, then hands the results back for
+re-verification.
 
 Trigger (checked by the caller via :func:`should_recover`): verification ran,
 produced at least ``settings.recovery_min_citations`` claims, and fewer than
