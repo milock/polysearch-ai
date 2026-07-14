@@ -9,7 +9,7 @@ polysearch composes work from several upstream services and one adapted open-sou
 ### last30days community-signal library
 
 - **Project:** [last30days-skill](https://github.com/mvanhorn/last30days-skill)
-- **Author:** mvanhorn
+- **Author:** Matthew Van Horn ([@mvanhorn](https://github.com/mvanhorn))
 - **License:** MIT
 
 polysearch's community layer is adapted from last30days: the design of the multi-source community search, and portions of the per-source adapter and fusion logic in [`src/polysearch/community/`](src/polysearch/community/). The layer is native to polysearch (the adapters call each source's API directly), not a subprocess wrapper around the upstream tool. Under the MIT license, the copyright and permission notice is retained below.
@@ -17,7 +17,7 @@ polysearch's community layer is adapted from last30days: the design of the multi
 ```
 MIT License
 
-Copyright (c) mvanhorn (last30days-skill)
+Copyright (c) 2026 Matt Van Horn
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
