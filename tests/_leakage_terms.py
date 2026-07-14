@@ -32,6 +32,8 @@ BANNED_TOKENS: tuple[str, ...] = (
     "ezderm",
     "experity",
     "personal_context",
+    "qdrant",
+    "personal corpus",
     "fathom",
     "dermatology",
     "derm",

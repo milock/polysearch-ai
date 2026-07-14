@@ -35,9 +35,6 @@ First stable release: the full pipeline, packaged for PyPI.
 - README, architecture, providers, configuration, and agent-integration docs.
 - A repo-tree leakage gate (`tests/unit/test_no_internal_leakage.py`) enforced in CI.
 
-### Removed
-- The planned Qdrant vector-search / personal-corpus layer was dropped; polysearch is a web-backed research pipeline and does not ship a vector store.
-
 ## [0.1.0] — 2026-04-29
 
 Initial public release.
