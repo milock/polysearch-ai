@@ -54,8 +54,8 @@ def test_default_schemas_include_federalregister() -> None:
 
 def test_load_schema_parses_patterns() -> None:
     path = (
-        Path(authoritative.__file__).resolve().parents[3]
-        / "config"
+        Path(authoritative.__file__).resolve().parent.parent
+        / "data"
         / "authoritative_schemas"
         / "federalregister.yaml"
     )
