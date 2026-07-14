@@ -34,7 +34,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
             "What is a webhook?",
             {
                 "query_type": "FACTUAL",
-                "suggested_depth": "skip",
+                "suggested_depth": "quick",
                 "time_sensitive": False,
             },
         ),
@@ -68,19 +68,33 @@ def test_no_profile_means_not_domain_related():
     result = classify("AcmeCo pricing")
     assert result.domain_related is False
     assert result.competitive_mode is False
-    assert "--domain-context" not in result.flags
 
 
-def test_depth_flag_always_present():
+def test_depth_is_only_flag_emitted():
+    # ``flags`` must contain only public-CLI-valid flags; today that is just
+    # ``--depth=``. Non-CLI signals (handle, github, recency, domain/competitive)
+    # live on typed fields, never as invented flag strings.
     for topic in [
         "What is a webhook?",
-        "Peter Steinberger",
+        "@steipete latest launches",
+        "github.com/rails/rails internals",
+        "latest Kubernetes releases this week",
         "everything about distributed consensus algorithms",
     ]:
         result = classify(topic)
-        assert any(f.startswith("--depth=") for f in result.flags), (
-            f"no --depth= flag for {topic!r}: {result.flags}"
+        assert result.flags == [f"--depth={result.suggested_depth}"], (
+            f"unexpected flags for {topic!r}: {result.flags}"
         )
+
+
+def test_no_skip_depth_ever():
+    # "skip" was removed from the Depth literal; definitional queries map to quick.
+    for topic in [
+        "What is a webhook?",
+        "when is the next release",
+        "who is the maintainer",
+    ]:
+        assert classify(topic).suggested_depth in ("quick", "standard", "deep")
 
 
 def test_runtime_and_cost_per_depth():
@@ -88,13 +102,11 @@ def test_runtime_and_cost_per_depth():
         "quick": (45, 0.04),
         "standard": (150, 0.12),
         "deep": (300, 0.35),
-        "skip": (5, 0.01),
     }
     topics_by_depth = {
-        "skip": "What is a webhook?",
+        "quick": "What is a webhook?",
         "standard": "Peter Steinberger",
         "deep": "deep dive open source telemetry",
-        "quick": "puppy training tips",
     }
     for depth, topic in topics_by_depth.items():
         result = classify(topic)
@@ -106,26 +118,27 @@ def test_runtime_and_cost_per_depth():
         assert result.cost_estimate.cost_usd == exp_cost
 
 
-def test_x_handle_flag_and_person_type():
+def test_short_thematic_is_quick():
+    result = classify("puppy training tips")
+    assert result.suggested_depth == "quick"
+
+
+def test_x_handle_field_and_person_type():
     result = classify("@steipete latest launches")
     assert result.query_type == "PERSON"
-    assert "--x-handle=steipete" in result.flags
+    assert result.x_handle == "steipete"
 
 
-def test_github_flags():
+def test_github_fields():
     result = classify("github.com/rails/rails internals")
-    assert "--github-user=rails" in result.flags
-    assert "--github-repo=rails" in result.flags
+    assert result.github_user == "rails"
+    assert result.github_repo == "rails"
 
 
-def test_recency_week_when_time_sensitive():
-    result = classify("latest Kubernetes releases this week")
-    assert "--recency=week" in result.flags
-
-
-def test_recency_month_by_default():
-    result = classify("Peter Steinberger")
-    assert "--recency=month" in result.flags
+def test_time_sensitive_carries_recency_signal():
+    # The recency signal (was --recency=week) now lives on time_sensitive.
+    assert classify("latest Kubernetes releases this week").time_sensitive is True
+    assert classify("Peter Steinberger").time_sensitive is False
 
 
 def test_reasons_non_empty():
@@ -149,7 +162,6 @@ def test_profile_comparison_is_competitive(acme_profile):
     assert result.query_type == "COMPARISON"
     assert result.competitive_mode is True
     assert result.domain_related is True
-    assert "--competitive" in result.flags
 
 
 def test_profile_entity_classifies_as_product(acme_profile):
@@ -157,13 +169,11 @@ def test_profile_entity_classifies_as_product(acme_profile):
     result = classify("AcmeCo pricing", profile=acme_profile)
     assert result.query_type == "PRODUCT"
     assert result.domain_related is True
-    assert "--domain-context" in result.flags
 
 
 def test_profile_keyword_marks_domain_related(acme_profile):
     result = classify("widget throughput tuning", profile=acme_profile)
     assert result.domain_related is True
-    assert "--domain-context" in result.flags
 
 
 # ── DomainProfile loading ──────────────────────────────────────────────────
@@ -212,7 +222,7 @@ def test_classify_loads_env_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("POLYSEARCH_DOMAIN_PROFILE", str(yaml_path))
     result = classify("AcmeCo vs BetaCorp")
     assert result.competitive_mode is True
-    assert "--competitive" in result.flags
+    assert result.domain_related is True
 
 
 # ── performance + CLI ──────────────────────────────────────────────────────
@@ -245,9 +255,13 @@ def test_cli_mode_returns_json():
         "competitive_mode",
         "suggested_depth",
         "flags",
+        "x_handle",
+        "github_user",
+        "github_repo",
         "cost_estimate",
         "reasons",
     ):
         assert key in data, f"missing key {key} in CLI output"
     assert data["query_type"] == "COMPARISON"
+    assert data["flags"] == ["--depth=standard"]
     assert data["cost_estimate"]["runtime_sec"] > 0
