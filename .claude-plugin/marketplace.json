@@ -1,0 +1,15 @@
+{
+  "name": "polysearch",
+  "description": "Single-plugin marketplace for polysearch — a modular, multi-source research pipeline with citation tier classification.",
+  "owner": {
+    "name": "milock"
+  },
+  "plugins": [
+    {
+      "name": "polysearch",
+      "source": "./",
+      "description": "Modular, multi-source research pipeline with citation tier classification. Ships a Claude Code skill (/polysearch:research) plus a pip-installable Python CLI.",
+      "version": "0.1.0"
+    }
+  ]
+}
