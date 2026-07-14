@@ -1,7 +1,6 @@
 """Unit tests for polysearch.verification.verifier.
 
-Ported from the internal citation-verifier suite. Two shape changes from the
-internal tests:
+Covers the citation verifier. Two notes on the test doubles:
 
 1. Scraping routes through ``polysearch.sources.scrape`` (Task 7's modern
    Firecrawl → httpx → Playwright chain), so the fake Firecrawl app implements

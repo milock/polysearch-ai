@@ -319,13 +319,9 @@ def test_classify_stays_dict_lookup_at_scale() -> None:
 
 
 # --- leakage guard: shipped YAML carries ZERO banned strings ---------------
-
-_BANNED = [
-    "michaellock", "clarityrcm", "clarity", "ashwin", "tami", "lindsay",
-    "danielle", "jessica", "ellie", "modmed", "ezderm", "experity",
-    "personal_context", "fathom", "dermatology", "derm", "rcm", "cpt",
-    "icd-10", "icd10",
-]
+# The banned list lives once in tests/_leakage_terms.py (the leakage gate owns
+# it); import it here so the raw token literals live in a single file.
+from tests._leakage_terms import BANNED_TOKENS as _BANNED
 
 
 def test_shipped_yaml_has_no_banned_strings() -> None:

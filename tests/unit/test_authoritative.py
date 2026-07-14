@@ -66,7 +66,7 @@ def test_load_schema_parses_patterns() -> None:
     assert all(isinstance(p, Pattern) for p in schema.patterns)
 
 
-# ── extraction against the fixture (adapted from internal cases) ─────────────
+# ── extraction against the fixture ───────────────────────────────────────────
 
 def test_extract_docket_number(fr_content: str, fr_schema: AuthoritativeSchema) -> None:
     facts = extract(_FR_URL, fr_content, fr_schema)

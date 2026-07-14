@@ -1,8 +1,7 @@
 """Unit tests for polysearch.extractors.claims.
 
-The number-extraction cases are ported verbatim from the internal pipeline's
-``test_synthesis_number_extraction`` suite — they guard the verification-yield
-fix where enumerated-list markers and version/section numbers ("1.1", "2.3")
+The number-extraction cases guard the verification-yield fix where
+enumerated-list markers and version/section numbers ("1.1", "2.3")
 were extracted as factual figures and forced a NUMBER_MISMATCH on nearly every
 claim. The ``extract_claims`` cases exercise the public entry point: only
 sentences carrying a verifiable quote or number become Claims.
