@@ -119,17 +119,64 @@ class _FakeVerifier:
 
 
 class _SpyVerifier:
-    """Records the kwargs of its first verify call for budget/concurrency asserts."""
+    """Records verify-call kwargs and the claims it was handed, for asserts."""
 
     def __init__(self, *, credits_exhausted: bool = False):
         self.calls: list[dict] = []
+        self.seen_claims: list = []
         self._credits_exhausted = credits_exhausted
 
     async def verify(self, claims, *, budget_usd, max_concurrency):
         self.calls.append({"budget_usd": budget_usd, "max_concurrency": max_concurrency})
+        self.seen_claims.extend(claims)
         report = _empty_verification()
         report.credits_exhausted_hit = self._credits_exhausted
         return report
+
+
+_FR_URL = "https://www.federalregister.gov/documents/2026/01/15/2026-00001/rule"
+# Markdown that matches the bundled federalregister.gov schema (docket / effective
+# date / CFR cite) and carries a verifiable dollar figure in the CFR context so the
+# extracted fact becomes a checkable claim.
+_FR_MARKDOWN = (
+    "Document Number: 2026-00001\n"
+    "Effective Date: January 15, 2026\n"
+    "The rule adjusts payments by $1,250 under 42 CFR Part 405.\n"
+)
+
+
+class _GrounderWithHighTierPage:
+    """Grounder whose last run scraped one HIGH-tier page with full markdown."""
+
+    name = "grounding"
+
+    def __init__(self):
+        from polysearch.providers.firecrawl import GroundedItem
+
+        self.last_items = [
+            GroundedItem(
+                url=_FR_URL,
+                title="A Federal Register rule",
+                markdown=_FR_MARKDOWN,
+                domain="federalregister.gov",
+                tier="HIGH",
+            )
+        ]
+
+    async def ground(self, topic, *, limit, scrape_top_k):
+        return LayerOutput(
+            layer="grounding",
+            results=[
+                SourceResult(
+                    url=_FR_URL,
+                    title="A Federal Register rule",
+                    snippet=_FR_MARKDOWN[:200],
+                    tier="HIGH",
+                    published_date="2026-01-15",
+                    layer="grounding",
+                )
+            ],
+        )
 
 
 def _providers(
@@ -308,6 +355,59 @@ async def test_credits_exhausted_flag_raises_pipeline_alert(tmp_output_dir):
         output_dir=tmp_output_dir,
     )
     assert any("credits exhausted" in e for e in report.pipeline_errors)
+
+
+async def test_authoritative_extraction_runs_on_high_tier_pages(tmp_output_dir):
+    # Standard depth (authoritative_top_k == 2); max_iterations=0 keeps refinement
+    # out so the spy only sees the first-pass claim set.
+    spy = _SpyVerifier()
+    report = await run_research(
+        "medicare payment rule effective date",
+        depth="standard",
+        settings=Settings(),
+        providers=_providers(
+            grounder=_GrounderWithHighTierPage(),
+            verifier=spy,
+        ),
+        max_iterations=0,
+        output_dir=tmp_output_dir,
+    )
+
+    # Counted in Pipeline Decisions (rendered from the classifier's reasons).
+    reasons = " | ".join(report.classification.get("reasons", []))
+    assert "authoritative extraction:" in reasons
+    assert "HIGH-tier page" in reasons
+
+    # The extracted fact reached the claim input and is attributed to its page.
+    # The $1,250 figure lives ONLY in the page markdown, which reaches claims
+    # solely via authoritative extraction (grounding snippets are not mined), so
+    # a claim carrying it proves the fact -> claim path.
+    fact_claims = [c for c in spy.seen_claims if "1,250" in c.text]
+    assert fact_claims
+    assert any(_FR_URL in c.source_urls for c in fact_claims)
+
+    md_text = next(tmp_output_dir.glob("*.md")).read_text()
+    assert "authoritative extraction:" in md_text
+
+
+async def test_authoritative_extraction_skipped_at_quick_depth(tmp_output_dir):
+    # Quick depth has authoritative_top_k == 0 -> the step is skipped entirely.
+    spy = _SpyVerifier()
+    report = await run_research(
+        "medicare payment rule effective date",
+        depth="quick",
+        settings=Settings(),
+        providers=_providers(
+            grounder=_GrounderWithHighTierPage(),
+            verifier=spy,
+        ),
+        output_dir=tmp_output_dir,
+    )
+    reasons = " | ".join(report.classification.get("reasons", []))
+    assert "authoritative extraction:" not in reasons
+    # No fact-derived claim: the page's $1,250 figure never reaches the claim set
+    # because the extraction step was skipped at quick depth.
+    assert not any("1,250" in c.text for c in spy.seen_claims)
 
 
 async def test_max_iterations_zero_disables_loop(tmp_output_dir, monkeypatch):
