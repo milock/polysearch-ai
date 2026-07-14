@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from polysearch import ratelimit
 from polysearch.config import Settings
 from polysearch.output.schema import SourceResult
 
@@ -231,11 +232,12 @@ class LinkedInEnricher:
             return None
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-                resp = await client.get(
-                    f"{_BASE}/v1/linkedin/profile",
-                    params={"url": person_or_company},
-                    headers={"x-api-key": key, "Content-Type": "application/json"},
-                )
+                async with ratelimit.acquire("scrapecreators"):
+                    resp = await client.get(
+                        f"{_BASE}/v1/linkedin/profile",
+                        params={"url": person_or_company},
+                        headers={"x-api-key": key, "Content-Type": "application/json"},
+                    )
             resp.raise_for_status()
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:

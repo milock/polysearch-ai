@@ -25,7 +25,6 @@ import json
 import os
 import re
 import time
-from contextlib import asynccontextmanager
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -39,19 +38,19 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from polysearch import ratelimit
 from polysearch.config import Settings
 from polysearch.output.schema import LayerOutput, SourceResult
 
 # ── Rate-limit seam ──────────────────────────────────────────────────────────
-# TODO(task-2.5): Task 2.5 ships ``polysearch.ratelimit`` with an async
-# ``acquire(provider)`` context manager (token-bucket) plus ``record_429``. Wire
-# it in HERE — this ``_acquire`` helper is the single integration point every
-# outbound call funnels through. Until then acquisition is a no-op.
+# Every outbound Perplexity call funnels through this single seam so one
+# integration point governs cross-process pacing (see ``polysearch.ratelimit``).
+# Referencing ``ratelimit.acquire`` by attribute at call time keeps it patchable
+# in tests.
 
 
-@asynccontextmanager
-async def _acquire(_provider: str = "perplexity"):
-    yield
+def _acquire(provider: str = "perplexity"):
+    return ratelimit.acquire(provider)
 
 
 # ── <think> block stripping ──────────────────────────────────────────────────
@@ -107,9 +106,11 @@ SEARCH_API_COST_USD = 0.005  # $5 / 1,000 requests
 _MODEL_SONAR_PRO = "sonar-pro"
 _MODEL_SONAR_REASONING_PRO = "sonar-reasoning-pro"
 
-# Published Perplexity pricing ($ per 1M tokens). Kept as a module constant:
-# ``Settings`` sources the model *names* (perplexity_model / perplexity_deep_model)
-# but exposes no per-token Perplexity pricing fields.
+# Published Perplexity pricing ($ per 1M tokens), used as the fallback table.
+# ``Settings`` now carries the primary model's per-token pricing
+# (``perplexity_price_in``/``perplexity_price_out``, defaults matching sonar-pro
+# below), which ``PerplexityProvider`` threads in per run via ``_estimate_cost``'s
+# ``pricing`` override. The deep/reasoning model retains this table's rates.
 _PRICING: dict[str, dict[str, float]] = {
     _MODEL_SONAR_PRO: {"input": 3.0, "output": 15.0, "search": 0.0},
     _MODEL_SONAR_REASONING_PRO: {"input": 2.0, "output": 8.0, "search": 5.0},
@@ -150,8 +151,15 @@ def _map_recency(recency: str) -> str | None:
     return recency
 
 
-def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    rates = _PRICING.get(model, {"input": 0.0, "output": 0.0, "search": 0.0})
+def _estimate_cost(
+    model: str,
+    tokens_in: int,
+    tokens_out: int,
+    pricing: dict[str, dict[str, float]] | None = None,
+) -> float:
+    rates = (pricing or {}).get(model) or _PRICING.get(
+        model, {"input": 0.0, "output": 0.0, "search": 0.0}
+    )
     search_cost = rates.get("search", 0.0) / 1_000_000  # per-query approximation
     return (
         (tokens_in / 1_000_000) * rates["input"]
@@ -286,6 +294,7 @@ async def _run_one(
     search_mode: SearchMode,
     context_size: str,
     response_schema: dict | None = None,
+    pricing: dict[str, dict[str, float]] | None = None,
 ) -> PerplexityResult:
     extra: dict[str, Any] = {
         "search_context_size": context_size,
@@ -348,7 +357,7 @@ async def _run_one(
     usage = raw.get("usage") or {}
     tokens_in = int(usage.get("prompt_tokens") or 0)
     tokens_out = int(usage.get("completion_tokens") or 0)
-    cost = _estimate_cost(model, tokens_in, tokens_out)
+    cost = _estimate_cost(model, tokens_in, tokens_out, pricing)
 
     return PerplexityResult(
         question=question,
@@ -380,12 +389,16 @@ async def research(
     api_key: str | None = None,
     model: str | None = None,
     deep_model: str | None = None,
+    pricing: dict[str, dict[str, float]] | None = None,
 ) -> list[PerplexityResult]:
     """Decompose topic into sub-questions, fire them in parallel, return results.
 
     ``model``/``deep_model`` override the built-in Sonar model names (the
     ``PerplexityProvider`` passes them from ``Settings``); when omitted, the
-    depth-appropriate default is used.
+    depth-appropriate default is used. ``pricing`` (model → per-1M-token rates)
+    overrides the module ``_PRICING`` table for cost estimation, letting the
+    provider source rates from ``Settings``; models absent from it fall back to
+    the module table.
     """
     key = _get_api_key(api_key)
     client = _make_client(key)
@@ -414,6 +427,7 @@ async def research(
             search_mode=search_mode,
             context_size=context_size,
             response_schema=response_schema,
+            pricing=pricing,
         )
         for sq in sub_qs
     ]
@@ -501,6 +515,16 @@ class PerplexityProvider:
         self, topic: str, *, sub_questions: int, depth: str
     ) -> LayerOutput:
         start = time.perf_counter()
+        # Source the primary model's per-token pricing from Settings; the deep
+        # model keeps the module ``_PRICING`` table (single price pair in
+        # Settings is matched to ``perplexity_model``).
+        pricing = {
+            self.settings.perplexity_model: {
+                "input": self.settings.perplexity_price_in,
+                "output": self.settings.perplexity_price_out,
+                "search": 0.0,
+            }
+        }
         results = await research(
             topic,
             depth=depth,  # type: ignore[arg-type]
@@ -508,6 +532,7 @@ class PerplexityProvider:
             api_key=self.settings.perplexity_api_key,
             model=self.settings.perplexity_model,
             deep_model=self.settings.perplexity_deep_model,
+            pricing=pricing,
         )
 
         sources: list[SourceResult] = []

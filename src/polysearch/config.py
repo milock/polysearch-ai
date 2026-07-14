@@ -83,6 +83,9 @@ class Settings:
     # ── Discovery / search ───────────────────────────────────────────────
     perplexity_model: str = "sonar-pro"
     perplexity_deep_model: str = "sonar-reasoning-pro"
+    # Per-1M-token pricing for the primary Perplexity model (sonar-pro rates).
+    perplexity_price_in: float = 3.0
+    perplexity_price_out: float = 15.0
     discovery_backend: DiscoveryBackend = "perplexity"
     embedding_model: str = "text-embedding-3-small"
 
@@ -132,6 +135,8 @@ class Settings:
             perplexity_deep_model=_get_str(
                 "POLYSEARCH_PERPLEXITY_DEEP_MODEL", "sonar-reasoning-pro"
             ),
+            perplexity_price_in=_get_float("POLYSEARCH_PERPLEXITY_PRICE_IN", 3.0),
+            perplexity_price_out=_get_float("POLYSEARCH_PERPLEXITY_PRICE_OUT", 15.0),
             discovery_backend=_resolve_discovery_backend(),
             embedding_model=_get_str(
                 "POLYSEARCH_EMBEDDING_MODEL", "text-embedding-3-small"

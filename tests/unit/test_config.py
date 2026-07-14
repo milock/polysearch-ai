@@ -30,6 +30,8 @@ _ENV_VARS = [
     "POLYSEARCH_X_HANDLES",
     "POLYSEARCH_OUTPUT_DIR",
     "POLYSEARCH_SYNTHESIS_MODEL",
+    "POLYSEARCH_PERPLEXITY_PRICE_IN",
+    "POLYSEARCH_PERPLEXITY_PRICE_OUT",
     "POLYSEARCH_DISCOVERY_BACKEND",
     "POLYSEARCH_DEEP_RESEARCH",
     "POLYSEARCH_FUZZY_THRESHOLD",
@@ -71,6 +73,9 @@ def test_defaults() -> None:
     assert s.synthesis_price_out == 4.50
     assert s.perplexity_model == "sonar-pro"
     assert s.perplexity_deep_model == "sonar-reasoning-pro"
+    # Default sonar-pro per-1M-token pricing.
+    assert s.perplexity_price_in == 3.0
+    assert s.perplexity_price_out == 15.0
     assert s.discovery_backend == "perplexity"
     assert s.embedding_model == "text-embedding-3-small"
     assert s.fuzzy_threshold == 0.85
@@ -100,6 +105,14 @@ def test_synthesis_model_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYSEARCH_SYNTHESIS_MODEL", "gpt-6-nano")
     s = Settings.from_env()
     assert s.synthesis_model == "gpt-6-nano"
+
+
+def test_perplexity_pricing_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYSEARCH_PERPLEXITY_PRICE_IN", "1.25")
+    monkeypatch.setenv("POLYSEARCH_PERPLEXITY_PRICE_OUT", "6.5")
+    s = Settings.from_env()
+    assert s.perplexity_price_in == 1.25
+    assert s.perplexity_price_out == 6.5
 
 
 def test_output_dir_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
