@@ -110,6 +110,31 @@ def test_huggingface_dataset_artifact_upgrades_to_medium() -> None:
     assert tier == "MEDIUM"
 
 
+# --- domain-scoped downgrades (Appendix A rule 6: contributor / native ads) -
+
+
+def test_forbes_contributor_path_downgrades_to_low() -> None:
+    tier, reason = classify_domain("https://www.forbes.com/sites/someone/2026/a-post")
+    assert tier == "LOW"
+    assert "/sites/" in reason
+
+
+def test_forbes_editorial_path_stays_medium() -> None:
+    tier, _ = classify_domain("https://www.forbes.com/regular-article")
+    assert tier == "MEDIUM"
+
+
+def test_scoped_pattern_does_not_downgrade_other_domains() -> None:
+    """/sites/ is a Forbes-only rule — a gov asset path must not be demoted."""
+    tier, _ = classify_domain("https://www.nih.gov/sites/default/files/report.pdf")
+    assert tier == "HIGH"
+
+
+def test_linkedin_pulse_is_low() -> None:
+    tier, _ = classify_domain("https://www.linkedin.com/pulse/some-article")
+    assert tier == "LOW"
+
+
 # --- BLOCKED hard-exclude --------------------------------------------------
 
 
