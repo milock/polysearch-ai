@@ -225,7 +225,10 @@ class LinkedInEnricher:
     async def enrich(self, person_or_company: str) -> SourceResult | None:
         """Fetch + normalize a LinkedIn profile URL into a ``SourceResult``.
 
-        ``person_or_company`` is a public LinkedIn profile (or company) URL.
+        ``person_or_company`` is a public LinkedIn profile (or company) URL —
+        the API endpoint is ``/v1/linkedin/profile?url=``, so a bare name cannot
+        be resolved here. Name-based PERSON context is the ``person_hook`` seam's
+        job; this enricher only runs when a profile URL is available.
         """
         key = self._key
         if not key:

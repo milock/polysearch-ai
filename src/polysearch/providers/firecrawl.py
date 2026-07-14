@@ -240,6 +240,12 @@ class FirecrawlGrounder:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        # Last run's enriched GroundedItems (with full scraped markdown + tier),
+        # stashed so the orchestrator can run authoritative extraction over the
+        # HIGH-tier pages — the projected SourceResults carry only a 600-char
+        # snippet. Additive instance attr, mirroring the community adapters'
+        # last_error / last_path pattern.
+        self.last_items: list[GroundedItem] = []
 
     # -- public protocol ---------------------------------------------------
 
@@ -247,6 +253,7 @@ class FirecrawlGrounder:
         self, topic: str, *, limit: int, scrape_top_k: int
     ) -> LayerOutput:
         start = time.perf_counter()
+        self.last_items = []
         try:
             items = await self._search(topic, limit=limit, scrape_top_k=scrape_top_k)
         except Exception as e:  # noqa: BLE001 — surface as a layer error, never crash the run
@@ -254,6 +261,7 @@ class FirecrawlGrounder:
             return LayerOutput(
                 layer="grounding", duration_ms=duration_ms, error=f"{type(e).__name__}: {e}"
             )
+        self.last_items = items
 
         results = [
             SourceResult(

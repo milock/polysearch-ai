@@ -295,7 +295,32 @@ async def run_research(
         if reason:
             pipeline_errors.append(f"synthesizer: {reason}")
 
-    # ── Claim extraction: synthesis + every research layer's narrative answers ─
+    # ── Authoritative-source extraction on HIGH-tier scraped pages ───────────
+    # The grounder stashes its enriched GroundedItems (full markdown + tier) on
+    # ``last_items``; the projected SourceResults carry only a snippet, so
+    # structured extraction runs against the markdown here. profile.authoritative_top_k
+    # caps how many HIGH-tier pages are mined (quick 0 / standard 2 / deep 4).
+    authoritative_facts: list[Any] = []
+    authoritative_pages = 0
+    if profile.authoritative_top_k > 0:
+        last_items = getattr(providers.grounder, "last_items", None) or []
+        high_pages = [
+            it
+            for it in last_items
+            if getattr(it, "tier", None) == "HIGH" and getattr(it, "markdown", "")
+        ][: profile.authoritative_top_k]
+        authoritative_pages = len(high_pages)
+        if high_pages:
+            from polysearch.extractors.authoritative import extract_auto, load_schemas
+
+            try:
+                schemas = load_schemas()
+                for item in high_pages:
+                    authoritative_facts.extend(extract_auto(item.url, item.markdown, schemas))
+            except Exception as exc:  # noqa: BLE001 — extraction must never sink the run
+                pipeline_errors.append(f"authoritative: {exc}")
+
+    # ── Claim extraction: synthesis + research answers + authoritative facts ──
     all_urls = [s.url for lyr in layers for s in lyr.results if s.url]
     claims: list[Claim] = []
     seen_claim_ids: set[str] = set()
@@ -317,6 +342,10 @@ async def run_research(
         lyr_urls = [s.url for s in lyr.results if s.url] or all_urls
         for answer in lyr.answers:
             _add_claims(extract_claims(answer, lyr_urls))
+    # Authoritative facts become claim-bearing text so they get verified like
+    # everything else — value + surrounding context carry the figure to check.
+    for fact in authoritative_facts:
+        _add_claims(extract_claims(f"{fact.value}. {fact.context}", [fact.source_url]))
 
     # ── Verification ─────────────────────────────────────────────────────────
     verification = None
@@ -409,10 +438,19 @@ async def run_research(
         total_cost += verification.total_cost_usd
     duration = time.perf_counter() - started
 
+    # Surface the authoritative-extraction outcome in Pipeline Decisions (the
+    # report writer renders the classifier's ``reasons`` under that section).
+    classification_dict = classification.model_dump()
+    if authoritative_pages:
+        classification_dict.setdefault("reasons", []).append(
+            f"authoritative extraction: {len(authoritative_facts)} fact(s) from "
+            f"{authoritative_pages} HIGH-tier page(s)"
+        )
+
     report = PipelineReport(
         topic=topic,
         depth=depth,
-        classification=classification.model_dump(),
+        classification=classification_dict,
         layers=layers,
         synthesis_md=synthesis_md,
         verification=verification,
