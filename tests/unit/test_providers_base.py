@@ -117,10 +117,37 @@ def test_build_providers_no_keys_deep_research_is_none() -> None:
     assert providers.deep_research is None
 
 
-def test_build_providers_no_keys_empty_community_and_no_linkedin() -> None:
+def test_build_providers_no_keys_activates_keyless_community_and_no_linkedin() -> None:
+    # With `community.adapters` now shipping, the keyless sources (Reddit's
+    # unauthenticated fallback, Hacker News, Bluesky, GitHub unauth) light up at
+    # ANY tier — a zero-credential install still gets a live community layer.
+    # LinkedIn stays gated on the ScrapeCreators key.
     providers = build_providers(_no_keys_settings())
-    assert providers.community_sources == []
+    names = {s.name for s in providers.community_sources}
+    assert names == {"reddit", "hackernews", "bluesky", "github"}
     assert providers.linkedin is None
+
+
+def test_build_providers_adds_youtube_only_when_keyed() -> None:
+    base = {s.name for s in build_providers(_no_keys_settings()).community_sources}
+    assert "youtube" not in base
+    keyed = build_providers(Settings(youtube_api_key="yt-1")).community_sources
+    assert "youtube" in {s.name for s in keyed}
+
+
+def test_build_providers_adds_x_only_when_scrapecreators_keyed() -> None:
+    base = {s.name for s in build_providers(_no_keys_settings()).community_sources}
+    assert "x" not in base
+    keyed = build_providers(Settings(scrapecreators_api_key="sc-1")).community_sources
+    assert "x" in {s.name for s in keyed}
+
+
+def test_build_providers_all_keys_activates_full_community_set() -> None:
+    providers = build_providers(
+        Settings(youtube_api_key="yt-1", scrapecreators_api_key="sc-1")
+    )
+    names = {s.name for s in providers.community_sources}
+    assert names == {"reddit", "hackernews", "bluesky", "github", "youtube", "x"}
 
 
 def test_build_providers_reasons_name_missing_credentials() -> None:
@@ -163,9 +190,11 @@ def test_community_sources_degrade_to_skip_when_adapters_missing(
     assert providers.community_sources == []
 
 
-def test_null_providers_registered_as_community_sources_protocol() -> None:
-    # CommunitySource is a runtime-checkable protocol; the no-keys list is empty
-    # but the protocol itself must be importable and checkable.
-    assert all(isinstance(s, CommunitySource) for s in build_providers(
-        _no_keys_settings()
-    ).community_sources)
+def test_community_sources_satisfy_community_source_protocol() -> None:
+    # CommunitySource is a runtime-checkable protocol; every wired source (the
+    # keyless set at no-keys, plus the key-gated ones) must satisfy it.
+    sources = build_providers(
+        Settings(youtube_api_key="yt-1", scrapecreators_api_key="sc-1")
+    ).community_sources
+    assert sources  # non-empty
+    assert all(isinstance(s, CommunitySource) for s in sources)
