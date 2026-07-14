@@ -12456,6 +12456,13 @@ path_rules:
     - /press/
     - /press-release
     - /whitepaper
+  # Domain-scoped downgrades: path patterns that force LOW only on the named
+  # host. Use these where a generic substring (e.g. /sites/) is a contributor
+  # network or native-advertising surface on one publisher but a legitimate
+  # asset path elsewhere — so it must never demote unrelated domains.
+  downgrades_by_domain:
+    forbes.com: [/sites/, /brandvoice/]
+    linkedin.com: [/pulse/]
   # Primary-artifact paths on otherwise-COMMUNITY code/model hosts are
   # primary sources, not chatter — raise them to MEDIUM.
   upgrades:

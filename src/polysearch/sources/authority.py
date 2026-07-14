@@ -43,6 +43,7 @@ _RANK: dict[str, int] = {"UNKNOWN": 0, "COMMUNITY": 1, "LOW": 2, "MEDIUM": 3, "H
 # ── Module caches (populated at import and by reload()) ──────────────────────
 _DOMAIN_TO_TIER: dict[str, tuple[Tier, str]] = {}
 _PATH_DOWNGRADES: list[str] = []
+_PATH_DOWNGRADES_BY_DOMAIN: dict[str, list[str]] = {}
 _PATH_UPGRADES: dict[str, tuple[Tier, list[str]]] = {}
 _UNKNOWN_SEEN: set[str] = set()
 
@@ -68,9 +69,10 @@ def _flatten(section: object) -> list[str]:
 
 def _load() -> None:
     """(Re)load tier mappings and path rules from YAML into module caches."""
-    global _DOMAIN_TO_TIER, _PATH_DOWNGRADES, _PATH_UPGRADES
+    global _DOMAIN_TO_TIER, _PATH_DOWNGRADES, _PATH_DOWNGRADES_BY_DOMAIN, _PATH_UPGRADES
     _DOMAIN_TO_TIER = {}
     _PATH_DOWNGRADES = []
+    _PATH_DOWNGRADES_BY_DOMAIN = {}
     _PATH_UPGRADES = {}
 
     path = _config_path()
@@ -94,6 +96,10 @@ def _load() -> None:
 
     rules = data.get("path_rules") or {}
     _PATH_DOWNGRADES = [str(p).strip().lower() for p in (rules.get("downgrades") or []) if p]
+    for domain, patterns in (rules.get("downgrades_by_domain") or {}).items():
+        cleaned = [str(p).strip().lower() for p in (patterns or []) if p]
+        if cleaned:
+            _PATH_DOWNGRADES_BY_DOMAIN[domain.strip().lower()] = cleaned
     for domain, spec in (rules.get("upgrades") or {}).items():
         target = str(spec.get("to", "")).upper()
         patterns = [str(p).strip().lower() for p in (spec.get("patterns") or []) if p]
@@ -156,9 +162,10 @@ def _log_unknown(host: str) -> None:
 def classify_domain(url: str) -> tuple[Tier, str]:
     """Classify ``url`` into a ``(tier, reason)`` pair.
 
-    Order: exact/subdomain host match → BLOCKED short-circuit → path downgrade
-    (force LOW) → path upgrade (raise a known primary artifact) → base tier.
-    An unknown domain is never promoted or demoted by its path.
+    Order: exact/subdomain host match → BLOCKED short-circuit → global path
+    downgrade → domain-scoped path downgrade (both force LOW) → path upgrade
+    (raise a known primary artifact) → base tier. An unknown domain is never
+    promoted or demoted by its path.
     """
     host, path = _normalize(url)
     if not host:
@@ -185,6 +192,16 @@ def classify_domain(url: str) -> tuple[Tier, str]:
     for pattern in _PATH_DOWNGRADES:
         if pattern in path:
             return "LOW", f"vendor marketing path '{pattern}' on {host}"
+
+    # Domain-scoped downgrades: contributor networks / native advertising on
+    # specific hosts (e.g. forbes.com/sites/, linkedin.com/pulse/) — scoped so a
+    # generic path like /sites/ never demotes an unrelated domain's own URLs
+    # (e.g. a gov site's /sites/default/files/ asset path).
+    scoped = _PATH_DOWNGRADES_BY_DOMAIN.get(host) or _PATH_DOWNGRADES_BY_DOMAIN.get(_root_domain(host))
+    if scoped:
+        for pattern in scoped:
+            if pattern in path:
+                return "LOW", f"contributor/native path '{pattern}' on {host}"
 
     upgrade = _PATH_UPGRADES.get(host) or _PATH_UPGRADES.get(_root_domain(host))
     if upgrade:
