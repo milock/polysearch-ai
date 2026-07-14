@@ -86,13 +86,21 @@ class SourceResult(BaseModel):
 
 
 class LayerOutput(BaseModel):
-    """Everything one layer produced, plus its cost/latency and any error."""
+    """Everything one layer produced, plus its cost/latency and any error.
+
+    ``answers`` carries the narrative long-form text a research layer produced
+    (Perplexity / deep-research answers), which lives on ``PerplexityResult.answer``
+    and would otherwise be dropped when the provider projects citations onto
+    ``results``. The orchestrator mines claims from these answers as well as from
+    the synthesis, so a deep-research narrative's figures still reach verification.
+    """
 
     layer: str
     results: list[SourceResult] = []
     cost_usd: float = 0.0
     duration_ms: int = 0
     error: str | None = None
+    answers: list[str] = []
 
 
 class CoverageVerdict(BaseModel):

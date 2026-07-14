@@ -303,6 +303,10 @@ class DeepResearchProvider:
             cost_usd=result.cost_usd,
             duration_ms=duration_ms,
             error=error,
+            # The deep-research narrative is where its figures live; carry it so
+            # claim extraction + verification see the long-form answer, not just
+            # the bare citations.
+            answers=[result.answer] if result.answer else [],
         )
 
 

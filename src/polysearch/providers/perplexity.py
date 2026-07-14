@@ -590,6 +590,9 @@ class PerplexityProvider:
             cost_usd=cost,
             duration_ms=duration_ms,
             error=error,
+            # Narrative answers travel with the layer so the orchestrator can mine
+            # claims from them; citations alone (in ``sources``) drop the prose.
+            answers=[r.answer for r in results if r.answer],
         )
 
 
