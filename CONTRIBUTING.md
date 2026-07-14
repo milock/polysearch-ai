@@ -8,12 +8,12 @@ Thanks for considering it. polysearch is a small, focused project — the most v
 
 ### High value
 
-- **New provider implementations.** The five protocols in `src/polysearch/providers/base.py` (`ResearchProvider`, `VectorStore`, `WebGrounder`, `Synthesizer`, `CitationVerifier`) are the spine. Implementations of any of them are the highest-leverage contribution.
+- **New provider implementations.** The protocols in `src/polysearch/providers/base.py` (`ResearchProvider`, `WebGrounder`, `Synthesizer`, `CitationVerifier`, `CommunitySource`, `PersonContextHook`) are the spine. Implementations of any of them are the highest-leverage contribution.
   - `ResearchProvider`: OpenAI deep research (when GA), Tavily Research, You.com Research API
-  - `VectorStore`: Weaviate, Pinecone, Chroma, pgvector
   - `WebGrounder`: Tavily, Brave Search, Serper, Bing Web Search
   - `Synthesizer`: any frontier model not yet covered
   - `CitationVerifier`: alternate scrape backends
+  - `CommunitySource`: a new forum or social source (see `docs/providers.md`)
 - **Worked examples** for new use cases — e.g., `examples/finance.md`, `examples/legal-research.md`. The `domain_tiers.yaml` ships with public-friendly defaults; domain-specific overrides as examples are gold.
 - **Bug reports** with a reproducible input. Including the depth, providers, env state, and expected vs. actual output helps reproduce.
 
