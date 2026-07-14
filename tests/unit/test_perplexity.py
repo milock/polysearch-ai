@@ -490,6 +490,30 @@ async def test_search_respects_custom_limit(_search_api_key):
 
 
 @respx.mock
+async def test_search_recency_sends_search_recency_filter(_search_api_key):
+    route = respx.post("https://api.perplexity.ai/search").mock(
+        return_value=httpx.Response(200, json={"id": "req-r", "results": []})
+    )
+
+    await pp.search("topic", recency="week")
+
+    payload = _json.loads(route.calls.last.request.content)
+    assert payload["search_recency_filter"] == "week"
+
+
+@respx.mock
+async def test_search_recency_all_omits_filter(_search_api_key):
+    route = respx.post("https://api.perplexity.ai/search").mock(
+        return_value=httpx.Response(200, json={"id": "req-r2", "results": []})
+    )
+
+    await pp.search("topic", recency="all")
+
+    payload = _json.loads(route.calls.last.request.content)
+    assert "search_recency_filter" not in payload
+
+
+@respx.mock
 async def test_search_empty_results_returns_empty_list(_search_api_key):
     respx.post("https://api.perplexity.ai/search").mock(
         return_value=httpx.Response(200, json={"id": "req-4", "results": []})
