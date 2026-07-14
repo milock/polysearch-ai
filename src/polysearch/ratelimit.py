@@ -69,6 +69,22 @@ def _default_state_dir() -> Path:
     return Path.home() / ".cache" / "polysearch" / "ratelimit"
 
 
+def parse_retry_after(value: str | float | None) -> float | None:
+    """Parse a Retry-After header into seconds.
+
+    Supports the numeric-seconds form (the common case for these APIs); the
+    HTTP-date form and any unparseable value return ``None`` so callers fall
+    back to the default backoff.
+    """
+    if value is None:
+        return None
+    try:
+        secs = float(value)
+    except (TypeError, ValueError):
+        return None
+    return secs if secs > 0 else None
+
+
 def _rpm_for(provider: str, rpm_override: float | None = None) -> float | None:
     """Resolve the effective rpm for a provider.
 
@@ -306,4 +322,5 @@ __all__ = [
     "acquire",
     "acquire_sync",
     "record_429",
+    "parse_retry_after",
 ]

@@ -241,6 +241,12 @@ class LinkedInEnricher:
             resp.raise_for_status()
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
+            # Broadcast a 429 to sibling processes via the shared ledger.
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                ratelimit.record_429(
+                    "scrapecreators",
+                    ratelimit.parse_retry_after(exc.response.headers.get("retry-after")),
+                )
             self.reason = f"linkedin enrichment failed: {exc}"
             return None
 
