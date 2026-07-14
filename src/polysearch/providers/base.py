@@ -17,7 +17,7 @@ surfaced later in the pipeline's decision log, so they are part of the contract.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from polysearch.config import Settings
 from polysearch.output.schema import (
@@ -26,6 +26,12 @@ from polysearch.output.schema import (
     SourceResult,
     VerificationReport,
 )
+
+if TYPE_CHECKING:
+    # Typing-only import: the enricher is lazy-imported at runtime inside
+    # ``_build_linkedin`` to preserve the credential-gated wiring and avoid an
+    # import cycle. This annotates the ``Providers.linkedin`` slot precisely.
+    from polysearch.providers.linkedin import LinkedInEnricher
 
 # ── Protocols ───────────────────────────────────────────────────────────────
 
@@ -175,7 +181,7 @@ class Providers:
     synthesizer: Synthesizer
     verifier: CitationVerifier
     community_sources: list[CommunitySource] = field(default_factory=list)
-    linkedin: CommunitySource | None = None
+    linkedin: "LinkedInEnricher | None" = None
 
 
 def build_providers(settings: Settings) -> Providers:
@@ -295,7 +301,7 @@ def _build_community_sources(settings: Settings) -> list[CommunitySource]:
     return sources
 
 
-def _build_linkedin(settings: Settings) -> CommunitySource | None:
+def _build_linkedin(settings: Settings) -> "LinkedInEnricher | None":
     if not settings.scrapecreators_api_key:
         return None
     try:
