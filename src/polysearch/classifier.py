@@ -36,7 +36,7 @@ QueryType = Literal[
     "FACTUAL",
 ]
 
-Depth = Literal["quick", "standard", "deep", "skip"]
+Depth = Literal["quick", "standard", "deep"]
 
 
 class CostEstimate(BaseModel):
@@ -55,7 +55,13 @@ class Classification(BaseModel):
     domain_related: bool
     competitive_mode: bool = False
     suggested_depth: Depth
+    # ``flags`` only ever holds flags the public CLI actually accepts (today just
+    # ``--depth=``). Other extracted signals live as typed fields below, not as
+    # invented flag strings.
     flags: list[str]
+    x_handle: str | None = None
+    github_user: str | None = None
+    github_repo: str | None = None
     cost_estimate: CostEstimate
     reasons: list[str]
 
@@ -171,7 +177,6 @@ _DEPTH_COSTS: dict[Depth, tuple[int, float]] = {
     "quick": (45, 0.04),
     "standard": (150, 0.12),
     "deep": (300, 0.35),
-    "skip": (5, 0.01),
 }
 
 
@@ -280,18 +285,18 @@ def _suggest_depth(
     word_count = len(topic.split())
 
     # "deep" wins over everything
-    if _DEEP_RE.search(topic):
-        m = _DEEP_RE.search(topic)
+    m = _DEEP_RE.search(topic)
+    if m:
         reasons.append(f"matched {m.group(0)!r} -> deep")
         return "deep", reasons
     if word_count > 12:
         reasons.append(f"word_count={word_count} > 12 -> deep")
         return "deep", reasons
 
-    # "skip" for trivial definitional questions
+    # trivial definitional questions need only a light lookup
     if query_type == "FACTUAL" and not time_sensitive:
-        reasons.append("definitional question, no strong triggers -> skip")
-        return "skip", reasons
+        reasons.append("definitional question, no strong triggers -> quick")
+        return "quick", reasons
 
     # time_sensitive forces at least standard
     if time_sensitive:
@@ -309,47 +314,29 @@ def _suggest_depth(
     return "standard", reasons
 
 
-def _suggest_flags(
+def _extract_references(
     topic: str,
-    depth: Depth,
-    time_sensitive: bool,
-    domain_related: bool,
-    competitive_mode: bool,
-) -> tuple[list[str], list[str]]:
-    flags: list[str] = []
+) -> tuple[str | None, str | None, str | None, list[str]]:
+    """Pull an @handle and any github user/repo out of the topic as typed data."""
     reasons: list[str] = []
-
-    if domain_related:
-        flags.append("--domain-context")
-        reasons.append("domain_related -> --domain-context")
-    if competitive_mode:
-        flags.append("--competitive")
-        reasons.append("competitive_mode -> --competitive")
-
-    flags.append(f"--depth={depth}")
-
-    if time_sensitive:
-        flags.append("--recency=week")
-        reasons.append("time_sensitive -> --recency=week")
-    else:
-        flags.append("--recency=month")
+    x_handle: str | None = None
+    github_user: str | None = None
+    github_repo: str | None = None
 
     handle_match = _HANDLE_RE.search(topic)
     if handle_match:
-        flags.append(f"--x-handle={handle_match.group(1)}")
-        reasons.append(f"@handle detected -> --x-handle={handle_match.group(1)}")
+        x_handle = handle_match.group(1)
+        reasons.append(f"@handle detected -> x_handle={x_handle}")
 
     gh_match = _GITHUB_RE.search(topic)
     if gh_match:
-        user = gh_match.group(1)
-        repo = gh_match.group(2)
-        flags.append(f"--github-user={user}")
-        reasons.append(f"github reference -> --github-user={user}")
-        if repo:
-            flags.append(f"--github-repo={repo}")
-            reasons.append(f"github repo -> --github-repo={repo}")
+        github_user = gh_match.group(1)
+        reasons.append(f"github reference -> github_user={github_user}")
+        if gh_match.group(2):
+            github_repo = gh_match.group(2)
+            reasons.append(f"github repo -> github_repo={github_repo}")
 
-    return flags, reasons
+    return x_handle, github_user, github_repo, reasons
 
 
 def classify(topic: str, profile: DomainProfile | None = None) -> Classification:
@@ -388,10 +375,12 @@ def classify(topic: str, profile: DomainProfile | None = None) -> Classification
                 "profile competitor or domain comparison -> competitive_mode"
             )
 
-    flags, f_reasons = _suggest_flags(
-        topic, depth, time_sensitive, domain_related, competitive_mode
-    )
-    reasons.extend(f_reasons)
+    # Only the depth flag maps to a real public CLI option; everything else the
+    # classifier learned is exposed as typed fields, not invented flag strings.
+    flags = [f"--depth={depth}"]
+
+    x_handle, github_user, github_repo, ref_reasons = _extract_references(topic)
+    reasons.extend(ref_reasons)
 
     runtime, cost = _DEPTH_COSTS[depth]
 
@@ -403,6 +392,9 @@ def classify(topic: str, profile: DomainProfile | None = None) -> Classification
         competitive_mode=competitive_mode,
         suggested_depth=depth,
         flags=flags,
+        x_handle=x_handle,
+        github_user=github_user,
+        github_repo=github_repo,
         cost_estimate=CostEstimate(runtime_sec=runtime, cost_usd=cost),
         reasons=reasons,
     )
