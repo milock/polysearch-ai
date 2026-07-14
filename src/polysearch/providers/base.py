@@ -79,6 +79,20 @@ class CommunitySource(Protocol):
     ) -> list[SourceResult]: ...
 
 
+@runtime_checkable
+class PersonContextHook(Protocol):
+    """Optional, pluggable person-context lookup for PERSON-classified runs.
+
+    Given a person's name, return supplemental context as a ``SourceResult`` (or
+    ``None`` when nothing is found). This is the public seam where a deployment
+    can wire its own private source — a CRM, a directory, an internal graph —
+    without that source living in the package. Register one per run via
+    ``run_research(..., person_hook=...)``; the default is ``None`` (no-op).
+    """
+
+    async def lookup(self, name: str) -> SourceResult | None: ...
+
+
 # ── Null implementations ─────────────────────────────────────────────────────
 #
 # Each null returns an empty result and carries a ``reason`` naming the missing
