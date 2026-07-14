@@ -352,6 +352,48 @@ async def test_research_missing_api_key_raises(monkeypatch):
         await pp.research("topic", api_key=None)
 
 
+def test_estimate_cost_pricing_override_beats_module_table():
+    # Module table for sonar-pro is $3/$15 per 1M tokens.
+    base = pp._estimate_cost("sonar-pro", 1_000_000, 1_000_000)
+    assert base == pytest.approx(3.0 + 15.0)
+    # An explicit pricing override wins; models absent from it fall back.
+    override = {"sonar-pro": {"input": 1.0, "output": 2.0, "search": 0.0}}
+    assert pp._estimate_cost("sonar-pro", 1_000_000, 1_000_000, override) == pytest.approx(3.0)
+    # not in override → module table ($2 input + $5/1M per-query search cost).
+    assert pp._estimate_cost(
+        "sonar-reasoning-pro", 1_000_000, 0, override
+    ) == pytest.approx(2.0 + 5.0 / 1_000_000)
+
+
+async def test_provider_threads_settings_pricing_into_cost(monkeypatch):
+    captured: dict = {}
+
+    async def _fake_research(topic, **kwargs):
+        captured.update(kwargs)
+        return [
+            pp.PerplexityResult(
+                question="q",
+                answer="a",
+                citations=[pp.Citation(url="https://ex.gov/a", domain="ex.gov")],
+                model="sonar-pro",
+                search_results=[],
+                tokens_input=0,
+                tokens_output=0,
+                cost_usd=0.0,
+                duration_ms=1,
+            )
+        ]
+
+    monkeypatch.setattr(pp, "research", _fake_research)
+    settings = Settings(
+        perplexity_api_key="sk-x", perplexity_price_in=1.5, perplexity_price_out=7.0
+    )
+    await pp.PerplexityProvider(settings).research("topic", sub_questions=1, depth="quick")
+    assert captured["pricing"] == {
+        "sonar-pro": {"input": 1.5, "output": 7.0, "search": 0.0}
+    }
+
+
 async def test_research_uses_settings_models_via_provider_override(monkeypatch):
     seen_models: list[str] = []
 
