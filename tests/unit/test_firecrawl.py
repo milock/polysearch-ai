@@ -82,7 +82,9 @@ def _patch_perplexity_discovery(
     """Patch the default (Perplexity) discovery backend to return canned results
     shaped as ``SourceResult`` objects."""
 
-    async def _fake_search(query: str, *, limit: int = 10, api_key: str | None = None):
+    async def _fake_search(
+        query: str, *, limit: int = 10, recency: str | None = None, api_key: str | None = None
+    ):
         if calls is not None:
             calls.append(query)
         return [
@@ -382,10 +384,51 @@ async def test_ground_returns_layer_output(monkeypatch: pytest.MonkeyPatch) -> N
     assert r.published_date == "2026-01-01"
 
 
+async def test_ground_backfills_snippet_from_markdown_when_discovery_snippet_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scraped result with no discovery snippet gets its SourceResult.snippet
+    backfilled from the scraped markdown (whitespace collapsed); a result that
+    already has a discovery snippet keeps it."""
+    _patch_perplexity_discovery(
+        monkeypatch,
+        [
+            {"url": "https://www.cms.gov/nosnip", "title": "No snippet", "description": ""},
+            {"url": "https://www.cms.gov/hassnip", "title": "Has snippet", "description": "discovery snippet here"},
+        ],
+    )
+    app = _FakeFirecrawlApp(
+        api_key="x",
+        scrape_data_by_url={
+            "https://www.cms.gov/nosnip": {
+                "markdown": "# Heading\n\nScraped body content   with   runs.",
+                "metadata": {"published_date": "2026-01-01"},
+            },
+            "https://www.cms.gov/hassnip": {
+                "markdown": "# Other\n\nDifferent scraped body.",
+                "metadata": {"published_date": "2026-01-01"},
+            },
+        },
+    )
+    _install_fake_firecrawl(monkeypatch, app)
+
+    grounder = fc.FirecrawlGrounder(_settings())
+    layer = await grounder.ground("cms", limit=2, scrape_top_k=2)
+
+    by_url = {r.url: r for r in layer.results}
+    backfilled = by_url["https://www.cms.gov/nosnip"]
+    preserved = by_url["https://www.cms.gov/hassnip"]
+
+    # Empty discovery snippet -> backfilled from markdown, whitespace collapsed.
+    assert backfilled.snippet == "# Heading Scraped body content with runs."
+    # Existing discovery snippet is preserved, not overwritten by markdown.
+    assert preserved.snippet == "discovery snippet here"
+
+
 async def test_ground_surfaces_discovery_error_without_crashing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _boom(query: str, *, limit: int = 10, api_key: str | None = None):
+    async def _boom(query: str, *, limit: int = 10, recency: str | None = None, api_key: str | None = None):
         raise RuntimeError("discovery exploded")
 
     # Route the failure through the search path but let _search swallow it to [].
@@ -395,6 +438,25 @@ async def test_ground_surfaces_discovery_error_without_crashing(
     # Discovery failure is caught inside _search -> empty results, no error.
     assert layer.layer == "grounding"
     assert layer.results == []
+
+
+async def test_grounder_threads_recency_into_perplexity_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The grounder's recency reaches ``perplexity.search`` as its ``recency`` arg
+    (default backend time-filters discovery)."""
+    seen: dict[str, Any] = {}
+
+    async def _fake_search(
+        query: str, *, limit: int = 10, recency: str | None = None, api_key: str | None = None
+    ):
+        seen["recency"] = recency
+        return []
+
+    monkeypatch.setattr(perplexity, "search", _fake_search)
+    grounder = fc.FirecrawlGrounder(_settings())
+    await grounder._search("q", limit=3, recency="week", scrape_top_k=0)
+    assert seen["recency"] == "week"
 
 
 # ---------- discovery backend switch --------------------------------------
@@ -431,7 +493,7 @@ async def test_discovery_brave_backend_hits_brave_endpoint(
     """When ``discovery_backend='brave'`` and a key is set, discovery hits the
     Brave Search endpoint (not Perplexity)."""
     # Perplexity would raise if it were (wrongly) called.
-    async def _pplx_should_not_run(query: str, *, limit: int = 10, api_key: str | None = None):
+    async def _pplx_should_not_run(query: str, *, limit: int = 10, recency: str | None = None, api_key: str | None = None):
         raise AssertionError("perplexity discovery must not run when backend='brave'")
 
     monkeypatch.setattr(perplexity, "search", _pplx_should_not_run)
@@ -473,7 +535,7 @@ async def test_discovery_firecrawl_backend_uses_v2_search(
 ) -> None:
     """``discovery_backend='firecrawl'`` routes discovery through the Firecrawl
     app's ``.search`` (v2 /search)."""
-    async def _pplx_should_not_run(query: str, *, limit: int = 10, api_key: str | None = None):
+    async def _pplx_should_not_run(query: str, *, limit: int = 10, recency: str | None = None, api_key: str | None = None):
         raise AssertionError("perplexity discovery must not run when backend='firecrawl'")
 
     monkeypatch.setattr(perplexity, "search", _pplx_should_not_run)

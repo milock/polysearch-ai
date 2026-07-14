@@ -151,6 +151,22 @@ def _looks_paywalled(markdown: str) -> bool:
     return any(marker in lowered for marker in _PAYWALL_MARKERS)
 
 
+# Synthesis consumes exactly ``snippet or markdown[:600]`` per source; mirror that
+# here so a scraped result with a thin/empty discovery snippet still carries the
+# scraped content that synthesis reads.
+_SNIPPET_CHARS = 600
+
+
+def _snippet_for(item: GroundedItem) -> str:
+    """Public-parity snippet: keep a non-empty discovery snippet; otherwise
+    backfill from the first ~600 chars of scraped markdown (whitespace runs
+    collapsed)."""
+    if item.snippet and item.snippet.strip():
+        return item.snippet
+    collapsed = re.sub(r"\s+", " ", item.markdown or "").strip()
+    return collapsed[:_SNIPPET_CHARS]
+
+
 def _as_dict(obj: Any) -> dict[str, Any]:
     """Best-effort convert a Pydantic-model-or-dict discovery result."""
     if obj is None:
@@ -243,7 +259,7 @@ class FirecrawlGrounder:
             SourceResult(
                 url=it.url,
                 title=it.title,
-                snippet=(it.snippet or it.markdown or "")[:500],
+                snippet=_snippet_for(it),
                 tier=it.tier,
                 published_date=it.published_date,
                 layer="grounding",
@@ -273,15 +289,16 @@ class FirecrawlGrounder:
             return await self._brave_search(query, count=limit, freshness=freshness)
         if backend == "firecrawl":
             return await self._firecrawl_search(query, limit=limit)
-        return await self._perplexity_search(query, limit=limit)
+        return await self._perplexity_search(query, limit=limit, recency=recency)
 
     async def _perplexity_search(
-        self, query: str, *, limit: int
+        self, query: str, *, limit: int, recency: Recency = "month"
     ) -> list[dict[str, Any]]:
         """Default backend: the flat-rate Perplexity Search API. Maps each
-        ``SourceResult`` onto a raw discovery dict."""
+        ``SourceResult`` onto a raw discovery dict. ``recency`` threads through as
+        the Search API's ``search_recency_filter`` (time-windowed discovery)."""
         results = await perplexity.search(
-            query, limit=limit, api_key=self.settings.perplexity_api_key
+            query, limit=limit, recency=recency, api_key=self.settings.perplexity_api_key
         )
         return [
             {

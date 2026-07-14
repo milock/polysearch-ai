@@ -474,6 +474,7 @@ async def search(
     query: str,
     *,
     limit: int = 10,
+    recency: str | None = None,
     api_key: str | None = None,
 ) -> list[SourceResult]:
     """Query the Perplexity Search API for raw ranked results (no LLM synthesis).
@@ -482,14 +483,23 @@ async def search(
     distinct from the chat-completions Sonar path used by ``research``. Results
     map into ``SourceResult`` objects tagged ``layer="grounding"`` (tier
     ``UNKNOWN`` — classification happens downstream).
+
+    ``recency`` (hour/day/week/month/year; "all"/"quarter" normalized via
+    ``_map_recency``) is passed through as the Search API's
+    ``search_recency_filter`` so grounding discovery can time-window results;
+    omit or pass "all" to disable it.
     """
     key = _get_api_key(api_key)
+    body: dict[str, Any] = {"query": query, "max_results": limit}
+    mapped_recency = _map_recency(recency) if recency is not None else None
+    if mapped_recency is not None:
+        body["search_recency_filter"] = mapped_recency
     async with httpx.AsyncClient() as client:
         async with _acquire():
             resp = await client.post(
                 PERPLEXITY_SEARCH_URL,
                 headers={"Authorization": f"Bearer {key}"},
-                json={"query": query, "max_results": limit},
+                json=body,
             )
         resp.raise_for_status()
         data = resp.json()
