@@ -1,64 +1,104 @@
 # Attribution
 
-polysearch composes work from several upstreams. This document credits them.
+polysearch composes work from several upstream services and one adapted open-source library. This document credits them.
 
 ---
 
-## Direct dependencies
+## Adapted open-source code
 
-### Last30days community signal layer
+### last30days community-signal library
+
 - **Project:** [last30days-skill](https://github.com/mvanhorn/last30days-skill)
 - **Author:** mvanhorn
 - **License:** MIT
-- **How polysearch uses it:** as the optional Tier-3 community signal layer. polysearch's `Last30DaysCommunitySignal` provider invokes the upstream CLI via subprocess if installed; otherwise falls back to a null implementation. polysearch does not vendor or modify the last30days source.
 
-### Perplexity Sonar API
+polysearch's community layer is adapted from last30days: the design of the multi-source community search, and portions of the per-source adapter and fusion logic in [`src/polysearch/community/`](src/polysearch/community/). The layer is native to polysearch (the adapters call each source's API directly), not a subprocess wrapper around the upstream tool. Under the MIT license, the copyright and permission notice is retained below.
+
+```
+MIT License
+
+Copyright (c) mvanhorn (last30days-skill)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## Services and APIs
+
+### Perplexity Sonar
+
 - **Project:** [Perplexity AI](https://www.perplexity.ai)
-- **License:** Commercial API (per their terms)
-- **How polysearch uses it:** the default `ResearchProvider` (Tier 0). Decomposed sub-question research with citation-aware results. Models: `sonar-pro` (standard) and `sonar-reasoning-pro` (deep).
+- **License:** commercial API
+- **How polysearch uses it:** the default `ResearchProvider`. Decomposed sub-question research with citation-aware results, using `sonar-pro` (standard) and `sonar-reasoning-pro`. The opt-in deep-research layer uses `sonar-deep-research`, whose narrative answers are mined for claims and verified like any other source.
 
 ### Firecrawl
-- **Project:** [Firecrawl](https://www.firecrawl.dev)
-- **License:** Commercial API
-- **How polysearch uses it:** the default `WebGrounder` and `CitationVerifier` (Tier 1). Web search + scrape with paywall detection and tier-aware downgrades.
 
-### Qdrant
-- **Project:** [Qdrant](https://qdrant.tech)
-- **License:** Apache 2.0 (open source) and Cloud (commercial)
-- **How polysearch uses it:** the default `VectorStore` (Tier 2 — optional). Personal/organizational corpus retrieval blended with research outputs.
+- **Project:** [Firecrawl](https://www.firecrawl.dev)
+- **License:** commercial API
+- **How polysearch uses it:** the default `WebGrounder` and `CitationVerifier`. Web search plus scrape with paywall detection, and the first step of the resilient fetch chain during verification.
+
+### ScrapeCreators
+
+- **Project:** [ScrapeCreators](https://scrapecreators.com)
+- **License:** commercial API
+- **How polysearch uses it:** the X community adapter (handle-based post collection) and the LinkedIn profile enricher. Both are opt-in and off unless `SCRAPECREATORS_API_KEY` is set.
 
 ### OpenAI
+
 - **Project:** [OpenAI API](https://platform.openai.com)
-- **License:** Commercial API
-- **How polysearch uses it:** the default `Synthesizer` for cross-layer synthesis (`gpt-5-mini`) and embeddings for vector queries (`text-embedding-3-small`).
+- **License:** commercial API
+- **How polysearch uses it:** the default `Synthesizer` (`gpt-5.4-mini`), the coverage evaluator that drives the refinement loop, and embeddings (`text-embedding-3-small`) for the verifier's paraphrase-rescue fallback.
 
 ### Anthropic
+
 - **Project:** [Anthropic API](https://docs.anthropic.com)
-- **License:** Commercial API
-- **How polysearch uses it:** the alternate `Synthesizer` (`claude-sonnet-*`). Used when only `ANTHROPIC_API_KEY` is set, or when explicitly requested via `--synthesizer anthropic`.
+- **License:** commercial API
+- **How polysearch uses it:** the alternate `Synthesizer`, used when only `ANTHROPIC_API_KEY` is set or when requested with `--synthesizer anthropic`.
+
+### Community source APIs
+
+The native community adapters read from these public and freemium endpoints:
+
+- **Hacker News via Algolia** ([hn.algolia.com](https://hn.algolia.com/api)): unauthenticated search over HN stories and comments.
+- **Bluesky AppView** ([public.api.bsky.app](https://docs.bsky.app)): the public AppView needs no auth for reads.
+- **GitHub Search API** ([docs.github.com](https://docs.github.com/en/rest/search)): repository, code, and issue search; a `GITHUB_TOKEN` raises the rate limit.
+- **Reddit** ([reddit.com/dev/api](https://www.reddit.com/dev/api)): the OAuth API when Reddit credentials are set, with an unauthenticated fallback.
+- **YouTube Data API** ([developers.google.com/youtube](https://developers.google.com/youtube/v3)): video and transcript search, key-gated.
 
 ---
 
 ## Methodology references
 
-The 4-layer pipeline architecture, citation tier system, and synthesis prompting style draw on patterns from public research-tool projects:
+The pipeline architecture, tiered citation model, and synthesis discipline draw on public research-tool patterns:
 
-- **OpenAI Deep Research** (the agentic-research methodology) — polysearch's structured-pipeline approach is a deliberate alternative to agentic loops, but the citation-quality discipline is shared.
-- **gpt-researcher** ([open-source agentic researcher](https://github.com/assafelovic/gpt-researcher)) — multi-source synthesis, depth profiles. polysearch's depth tiers (quick/standard/deep) take inspiration from this project's research-mode framing.
-- **Perplexity Sonar API documentation** — sub-question decomposition patterns.
-- **Wikipedia "Reliable sources" guidelines** — informed the default `domain_tiers.yaml` structure (tier-by-source-type rather than tier-by-domain-list).
+- **OpenAI Deep Research**: polysearch's fixed-pipeline approach is a deliberate alternative to an agentic loop, but it shares the emphasis on citation quality.
+- **gpt-researcher** ([open-source agentic researcher](https://github.com/assafelovic/gpt-researcher)): the quick/standard/deep depth framing takes inspiration from this project's research modes.
+- **Wikipedia "Reliable sources" guidance**: informed the tier-by-source-type structure of the default `domain_tiers.yaml`.
 
----
-
-## Embedded references in the pipeline
-
-When polysearch ships content for the Claude Code skill (under `skills/research/`), it borrows formatting conventions from the [Anthropic Agent Skills](https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills) documentation — progressive disclosure, frontmatter triggers, third-person descriptions.
+The Claude Code skill under [`skills/research/`](skills/research/) follows the conventions in the [Anthropic Agent Skills](https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills) documentation: progressive disclosure, frontmatter triggers, third-person descriptions.
 
 ---
 
 ## How to credit polysearch
 
-If you build on polysearch in a public project, a link in your README is plenty:
+A link in your README is plenty:
 
 ```markdown
 Powered by [polysearch](https://github.com/milock/polysearch).
@@ -69,7 +109,7 @@ For academic or research citations:
 ```bibtex
 @software{polysearch,
   author = {polysearch contributors},
-  title = {polysearch: modular multi-source research pipeline},
+  title = {polysearch: multi-source research pipeline with citation verification},
   year = {2026},
   url = {https://github.com/milock/polysearch}
 }
