@@ -6,9 +6,6 @@ the actual topic has thin recent chatter. This gate keeps only items whose title
 or snippet mentions at least one topic keyword and suppresses the entire layer
 when more than 70% of items are off-topic, so a low-signal community layer never
 dilutes synthesis.
-
-Adapted from the internal pipeline's ``_filter_community_items`` /
-``_derive_must_match_terms`` relevance gate.
 """
 
 from __future__ import annotations

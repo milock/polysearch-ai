@@ -1,17 +1,17 @@
 """OpenAI + Anthropic synthesizers.
 
-Fuse the pipeline's layer outputs into a single cited markdown report, adapting
-the internal cross-layer synthesis to the public :class:`Synthesizer` protocol
+Fuse the pipeline's layer outputs into a single cited markdown report behind the
+:class:`Synthesizer` protocol
 (``synthesize(topic, layers, *, style_constraints) -> (markdown, cost_usd)``).
 Both providers share one prompt builder and one output contract — Executive
 Summary / Key Findings / Source Quality Notes — and differ only in SDK and
 pricing.
 
-Two intentional departures from the internal port:
+Two design notes:
 
-- **No humanizer constraints.** The internal FORBIDDEN-STYLE block is private
-  and is NOT ported. The public prompt asks for plain, direct prose and appends
-  the deployment's ``style_constraints`` when one is set.
+- **Style is caller-supplied.** The prompt asks for plain, direct prose and
+  appends the deployment's ``style_constraints`` verbatim when one is set,
+  rather than baking in a fixed house style.
 - **No rate-limit seam.** ``polysearch.ratelimit`` carries no bucket for the
   OpenAI/Anthropic synthesis models, and synthesis is only 1-2 calls per run, so
   these calls are not routed through ``ratelimit.acquire``. Add a bucket there
@@ -51,8 +51,8 @@ def build_synthesis_prompt(
     """Build the synthesis user prompt from ``topic`` + layer material.
 
     Each source is rendered tier-labeled with its published date and snippet
-    (mirroring the internal ``snippet or markdown[:600]`` consumption), grouped
-    under its layer. ``style_constraints`` is appended verbatim when set.
+    (``snippet or markdown[:600]``), grouped under its layer.
+    ``style_constraints`` is appended verbatim when set.
     """
     parts = [
         f"Research topic: {topic}",

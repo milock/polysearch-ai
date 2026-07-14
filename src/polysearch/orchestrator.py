@@ -1,11 +1,10 @@
 """Pipeline orchestrator — wires every layer into one research run.
 
 ``run_research`` is the public entry point (re-exported from ``polysearch``). It
-ports the internal research pipeline's ``orchestrate`` (classify → parallel first
-pass → claim extraction → verification → recovery → refinement → report) minus
-the vertical-specific pieces, talking to the outside world only through the
-:class:`~polysearch.providers.base.Providers` bundle so every layer is
-credential-gated and failure-isolated.
+runs the full flow (classify → parallel first pass → claim extraction →
+verification → recovery → refinement → report), talking to the outside world
+only through the :class:`~polysearch.providers.base.Providers` bundle so every
+layer is credential-gated and failure-isolated.
 
 Flow:
   1. classify the topic (rules only, no network)
@@ -59,7 +58,7 @@ from polysearch.verification.recovery import (
 )
 
 # Native community adapters window unrelated viral chatter out on their own; 30
-# days matches the internal pipeline's default community window.
+# days is the default community recency window.
 _COMMUNITY_WINDOW_DAYS = 30
 
 _LINKEDIN_URL_RE = re.compile(r"https?://(?:[\w.-]*\.)?linkedin\.com/[^\s\"'<>]+", re.IGNORECASE)
@@ -538,8 +537,8 @@ async def run_parallel_synthesis(
 ) -> int:
     """Glob N existing report files, cross-synthesize them, write one report.
 
-    Ports the internal cross-report mode: matches ``glob_pattern`` (a filesystem
-    glob), EXCLUDES any prior ``*-synthesis.md`` output to avoid feedback loops,
+    Cross-report mode: matches ``glob_pattern`` (a filesystem glob), EXCLUDES
+    any prior ``*-synthesis.md`` output to avoid feedback loops,
     reads the rest, and writes ``<output_dir>/<stem>-synthesis.md``. Returns 0 on
     success, 1 when no sub-reports match or all fail to read.
     """

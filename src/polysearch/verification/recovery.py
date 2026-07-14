@@ -14,8 +14,8 @@ re-source each with a hardened single-shot Perplexity query that prefers primary
 domains and is told to answer "UNVERIFIED" rather than invent a source, then
 return the recovered results for tier-tagging + re-verification.
 
-Upgrade over the internal port: the "prefer primary domains" instruction is
-API-enforced rather than prompt-hoped — every recovery query passes
+The "prefer primary domains" instruction is API-enforced rather than
+prompt-hoped — every recovery query passes
 ``domain_filter=high_tier_domains()[:20]`` (Perplexity caps ``search_domain_filter``
 at 20 entries), the curated HIGH-tier core of ``domain_tiers.yaml``.
 """

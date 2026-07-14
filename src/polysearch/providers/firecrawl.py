@@ -17,9 +17,9 @@ single ``_discover`` seam):
 - ``"firecrawl"``: Firecrawl ``/v2/search`` (~2 credits / 10 results).
 
 ``FirecrawlGrounder(settings)`` implements the ``WebGrounder`` protocol; its
-``ground`` returns a ``LayerOutput`` of ``SourceResult``. The internal
+``ground`` returns a ``LayerOutput`` of ``SourceResult``. The module-private
 ``_search`` returns the richer ``GroundedItem`` (with markdown / tier reason /
-scrape provenance) that the ported unit tests assert against.
+scrape provenance) that the unit tests assert against.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ _SCRAPE_CONCURRENCY = 5
 
 
 class GroundedItem(BaseModel):
-    """Enriched grounding result — the internal contract the scrape/tier pipeline
+    """Enriched grounding result — the richer shape the scrape/tier step
     produces and the unit tests assert against. ``ground`` projects it onto the
     public ``SourceResult``."""
 

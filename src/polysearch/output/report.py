@@ -4,15 +4,13 @@
 file and a sibling JSON dump, written atomically (temp file + ``os.replace``)
 under ``YYYY-MM-DD-<slug>`` names.
 
-Ported behaviours (from the internal research-pipeline report writer):
+Rendering behaviours:
 - tier-bucketed "Sources by Quality Tier", with ``URL_DEAD`` citations excluded
   from the buckets and listed under "Excluded (dead links)";
 - a placeholder guard that refuses to save a report still holding unresolved
   ``{{...}}`` tokens unless ``settings.allow_placeholders`` is set;
 - depth reconciliation in "Pipeline Decisions" (what ran vs. what the classifier
   suggested), plus a Pipeline Errors section and a cost/stats block.
-
-Public-only behaviour:
 - ``BLOCKED_SOURCE`` citations are excluded into their own "Excluded (blocked
   sources)" section, kept separate from dead links; ``FETCH_BLOCKED`` sources
   are blocked-but-alive, so they stay in the buckets and are only noted;
