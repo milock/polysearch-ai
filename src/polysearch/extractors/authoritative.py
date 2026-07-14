@@ -5,8 +5,8 @@ structured facts using regex patterns declared in a YAML schema. The schema
 is the single source of truth: it names a ``domain`` and a list of
 ``patterns`` — each ``{name, regex, context_window}`` — and the engine runs
 those patterns directly. There is no per-domain hard-coded logic; adding a
-new authoritative source is a matter of dropping a sibling YAML into
-``config/authoritative_schemas/`` or a directory named by
+new authoritative source is a matter of dropping a sibling YAML into the
+bundled ``polysearch/data/authoritative_schemas/`` or a directory named by
 ``$POLYSEARCH_SCHEMA_DIR``.
 
 Public API::
@@ -23,6 +23,7 @@ domain; ``extract_auto`` returns ``[]`` when no loaded schema matches the URL.
 
 from __future__ import annotations
 
+import importlib.resources as resources
 import os
 import re
 from functools import lru_cache
@@ -83,8 +84,12 @@ def _domain_matches(host: str, domain: str) -> bool:
 
 
 def _default_schema_dir() -> Path:
-    """The bundled schema directory (``<repo>/config/authoritative_schemas``)."""
-    return Path(__file__).resolve().parents[3] / "config" / "authoritative_schemas"
+    """The bundled schema directory (``polysearch/data/authoritative_schemas``).
+
+    Ships inside the package, so it resolves the same in a checkout and in an
+    installed wheel.
+    """
+    return Path(resources.files("polysearch") / "data" / "authoritative_schemas")
 
 
 def load_schema(path: str | Path) -> AuthoritativeSchema:

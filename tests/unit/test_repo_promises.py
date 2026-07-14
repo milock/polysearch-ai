@@ -33,7 +33,7 @@ def _p(*parts: str) -> Path:
     "relpath",
     [
         "install.sh",
-        "config/domain_tiers.yaml",
+        "src/polysearch/data/domain_tiers.yaml",
         "skills/research/SKILL.md",
         "agents/researcher.md",
         "examples/quickstart.py",
@@ -132,18 +132,19 @@ def test_skill_has_name_and_description_frontmatter() -> None:
     assert "name:" in fm and "description:" in fm
 
 
-# ── ledgered packaging gap (TODO(23)) ────────────────────────────────────────
+# ── packaging: config resources ship inside the importable package ───────────
+# (Regression guard for the fixed wheel-packaging gap. The domain map and the
+# authoritative-source schemas must resolve as package resources so an installed
+# wheel — not just a source checkout — can find them; otherwise every source
+# downgrades to UNKNOWN. See sources/authority.py and extractors/authoritative.py.)
 
 
-@pytest.mark.xfail(
-    reason="TODO(23): config/domain_tiers.yaml and config/authoritative_schemas/*.yaml "
-    "are located via Path(__file__).parents[3]/config (repo root) and are NOT bundled "
-    "into the wheel — an installed package cannot find them and every source downgrades "
-    "to UNKNOWN. Fix at release: move config/ under src/polysearch/data/, switch "
-    "authority.py and extractors/authoritative.py to importlib.resources, and add the "
-    "package-data glob. This xfail flips to pass once the resource is importable.",
-    strict=True,
-)
 def test_domain_tiers_yaml_ships_as_package_resource() -> None:
     resource = importlib.resources.files("polysearch") / "data" / "domain_tiers.yaml"
     assert resource.is_file()
+
+
+def test_authoritative_schemas_ship_as_package_resources() -> None:
+    schema_dir = importlib.resources.files("polysearch") / "data" / "authoritative_schemas"
+    assert schema_dir.is_dir()
+    assert any(p.name.endswith(".yaml") for p in schema_dir.iterdir())

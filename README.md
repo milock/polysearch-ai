@@ -94,7 +94,7 @@ If a tier's credentials aren't present, that layer gets a null provider and the 
 |---|---|
 | [`src/polysearch/`](src/polysearch/) | The Python package. Provider abstractions, orchestrator, CLI. |
 | [`src/polysearch/providers/`](src/polysearch/providers/) | Concrete implementations of each provider protocol. |
-| [`config/`](config/) | Default `domain_tiers.yaml` (gov, academic, major news) plus annotated example. |
+| [`src/polysearch/data/`](src/polysearch/data/) | Bundled `domain_tiers.yaml` (gov, academic, major news) and authoritative-source schemas — ship inside the wheel. Override with `POLYSEARCH_DOMAIN_TIERS` / `POLYSEARCH_SCHEMA_DIR`. |
 | [`skills/research/`](skills/research/) | Drop-in for Claude Code at `~/.claude/skills/research/`. |
 | [`agents/`](agents/) | Thin agent template — drop in if you want a slash-command-driven research agent. |
 | [`examples/`](examples/) | Quickstart scripts, tier setup walkthroughs, sample outputs. |

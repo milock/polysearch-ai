@@ -1,7 +1,7 @@
 """Source-authority classifier.
 
 Maps URLs to research-quality tiers (HIGH / MEDIUM / LOW / COMMUNITY / BLOCKED /
-UNKNOWN), backed by the domain map in ``config/domain_tiers.yaml``. Downstream
+UNKNOWN), backed by the domain map in ``polysearch/data/domain_tiers.yaml``. Downstream
 grounding, community, and citation-verification layers use the tier to prefer
 authoritative sources, drop BLOCKED ones, and flag LOW/UNKNOWN ones.
 
@@ -18,6 +18,7 @@ Configuration:
 
 from __future__ import annotations
 
+import importlib.resources as resources
 import logging
 import os
 from pathlib import Path
@@ -30,9 +31,9 @@ log = logging.getLogger(__name__)
 
 Tier = Literal["HIGH", "MEDIUM", "LOW", "COMMUNITY", "BLOCKED", "UNKNOWN"]
 
-# Repo-root default; overridable via POLYSEARCH_DOMAIN_TIERS.
-# authority.py lives at src/polysearch/sources/ -> parents[3] is the repo root.
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "domain_tiers.yaml"
+# The domain map ships inside the package at polysearch/data/domain_tiers.yaml,
+# so it resolves the same in a checkout and in an installed wheel. Overridable
+# via POLYSEARCH_DOMAIN_TIERS.
 
 # Undated downgrade: an undated source drops one tier of trust.
 _DOWNGRADE_STEP: dict[str, Tier] = {"HIGH": "MEDIUM", "MEDIUM": "LOW"}
@@ -53,7 +54,9 @@ _UNKNOWN_LOG: Path | None = None
 
 def _config_path() -> Path:
     override = os.environ.get("POLYSEARCH_DOMAIN_TIERS")
-    return Path(override) if override else _DEFAULT_CONFIG_PATH
+    if override:
+        return Path(override)
+    return Path(resources.files("polysearch") / "data" / "domain_tiers.yaml")
 
 
 def _flatten(section: object) -> list[str]:

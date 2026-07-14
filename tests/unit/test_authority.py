@@ -2,7 +2,7 @@
 
 Fixtures are generic (gov / news / dev / social domains) — no vertical-specific
 domains. Every domain referenced here resolves against the shipped public
-`config/domain_tiers.yaml`.
+`polysearch/data/domain_tiers.yaml`.
 """
 
 from __future__ import annotations
@@ -330,6 +330,8 @@ _BANNED = [
 
 def test_shipped_yaml_has_no_banned_strings() -> None:
     root = Path(__file__).resolve().parents[2]
-    text = (root / "config" / "domain_tiers.yaml").read_text(encoding="utf-8").lower()
+    text = (
+        root / "src" / "polysearch" / "data" / "domain_tiers.yaml"
+    ).read_text(encoding="utf-8").lower()
     hits = [tok for tok in _BANNED if tok in text]
     assert not hits, f"banned strings leaked into shipped YAML: {hits}"
