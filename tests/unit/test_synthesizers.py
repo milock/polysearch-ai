@@ -2,9 +2,9 @@
 
 Covers the shared prompt builder and both concrete synthesizers. All SDK I/O is
 mocked (AsyncOpenAI / AsyncAnthropic monkeypatched) so the suite runs with zero
-env vars. The humanizer-absence test is mandatory: the public prompt must NOT
-carry the internal FORBIDDEN-STYLE constraints, and MUST carry
-``style_constraints`` when the deployment sets one.
+env vars. The house-style-absence test is mandatory: the public prompt must NOT
+carry a fixed forbidden-style block, and MUST carry ``style_constraints`` when
+the deployment sets one.
 """
 
 from __future__ import annotations

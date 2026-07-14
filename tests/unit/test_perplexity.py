@@ -1,10 +1,10 @@
 """Unit tests for polysearch.providers.perplexity.
 
-Ported from the internal ``perplexity_direct`` suite (chat-completions Sonar
-path, ``<think>`` stripping, and the Search API), adapted to the public package
-surface: the provider returns a ``LayerOutput``, ``search`` returns
-``SourceResult`` objects, and ``strip_think_blocks`` is public. All network I/O
-is mocked (AsyncOpenAI monkeypatch / respx) — the suite runs with zero env vars.
+Covers the Perplexity provider (chat-completions Sonar path, ``<think>``
+stripping, and the Search API): the provider returns a ``LayerOutput``,
+``search`` returns ``SourceResult`` objects, and ``strip_think_blocks`` is
+public. All network I/O is mocked (AsyncOpenAI monkeypatch / respx) — the suite
+runs with zero env vars.
 """
 
 from __future__ import annotations

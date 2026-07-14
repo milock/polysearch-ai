@@ -1,9 +1,9 @@
 """Unit tests for polysearch.providers.deep_research.
 
-Ported from the internal ``extensions.deep_research`` suite (sonar-deep-research
-async Sonar API), adapted to the public package surface: a module-level
-``research`` returns a ``PerplexityResult``, and ``DeepResearchProvider`` adapts
-it to the ``ResearchProvider`` protocol (returns a ``LayerOutput``).
+Covers the deep-research provider (sonar-deep-research async Sonar API): a
+module-level ``research`` returns a ``PerplexityResult``, and
+``DeepResearchProvider`` adapts it to the ``ResearchProvider`` protocol (returns
+a ``LayerOutput``).
 
 All network I/O is mocked with respx — the suite runs with zero env vars.
 Submission is ``POST /v1/async/sonar`` with a wrapped ``{"request": {...}}``

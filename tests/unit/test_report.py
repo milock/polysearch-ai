@@ -1,18 +1,20 @@
 """Unit tests for polysearch.output.report — markdown + JSON report writer.
 
-Ports three internal report-writer test files to the public ``PipelineReport``
-schema (placeholder guard, dead-URL exclusion, depth reconciliation) and adds
-public-only coverage: blocked-source exclusion separate from dead links,
-fetch-blocked notation, the refinement-trace section, and a full-render
-snapshot over a neutral topic.
+Covers the markdown + JSON report writer over the ``PipelineReport`` schema:
+placeholder guard, dead-URL exclusion, depth reconciliation, blocked-source
+exclusion separate from dead links, fetch-blocked notation, the refinement-trace
+section, and a full-render snapshot over a neutral topic.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 
 import pytest
+
+from tests._leakage_terms import BANNED_TOKENS
 
 from polysearch.config import Settings
 from polysearch.output.report import (
@@ -371,8 +373,9 @@ def test_full_render_snapshot() -> None:
 
 
 def test_no_internal_vocabulary_in_output() -> None:
-    """The public writer must carry zero trace of the internal module."""
+    """The public writer must carry zero trace of private-project vocabulary."""
     out = render_markdown(_full_report(), settings=Settings(style_constraints="x"))
     lowered = out.lower()
-    for banned in ("clarity", "battlecard", "customer relationship snapshot", "warm intro"):
-        assert banned not in lowered
+    extra_terms = ("battlecard", "customer relationship snapshot", "warm intro")
+    for banned in tuple(BANNED_TOKENS) + extra_terms:
+        assert not re.search(rf"\b{re.escape(banned)}\b", lowered), banned

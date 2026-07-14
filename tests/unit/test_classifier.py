@@ -1,9 +1,8 @@
 """Unit tests for polysearch.classifier — rule-based query classifier.
 
-Ported from the internal research-pipeline trigger tests, minus the
-vertical-specific cases (those live in a user ``DomainProfile`` now, not the
-package). Adds profile-driven coverage: a custom profile turns generic tokens
-into recognised entities/competitors.
+Vertical-specific cases live in a user ``DomainProfile`` now, not the package.
+Adds profile-driven coverage: a custom profile turns generic tokens into
+recognised entities/competitors.
 """
 
 from __future__ import annotations

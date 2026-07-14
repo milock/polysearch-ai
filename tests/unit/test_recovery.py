@@ -1,10 +1,10 @@
 """Tests for polysearch.verification.recovery.
 
-Ported from the internal ``extensions.recovery_pass`` suite and adapted to the
-public API: thresholds live on :class:`~polysearch.config.Settings` (not module
-constants), ``research`` is reached via the ``providers.perplexity`` module, and
-``merge_reports`` is complete over the public ``VerificationReport`` schema
-(which carries ``blocked_sources``, absent from the internal report).
+Covers the recovery pass: thresholds live on
+:class:`~polysearch.config.Settings` (not module constants), ``research`` is
+reached via the ``providers.perplexity`` module, and ``merge_reports`` is
+complete over the ``VerificationReport`` schema (which carries
+``blocked_sources``).
 """
 
 from __future__ import annotations
@@ -143,7 +143,7 @@ async def test_recover_passes_high_tier_domain_filter(monkeypatch):
     claim = _claim("c1", "Something with a load-bearing number 42 in it")
     report = _report_with_failure("c1")
 
-    await recovery.recover("derm billing topic", report, [claim], settings=SETTINGS)
+    await recovery.recover("database indexing topic", report, [claim], settings=SETTINGS)
 
     assert len(calls) == 1
     expected = high_tier_domains()[:20]
@@ -207,13 +207,13 @@ async def test_recover_caps_and_dedupes_failed_claims(monkeypatch):
 
     monkeypatch.setattr(perplexity, "research", _fake_research)
 
-    prefix = "Independent dermatology practices lost revenue last year"  # 56 chars
+    prefix = "Mid-market SaaS vendors lost renewal revenue last year"  # 54 chars
     claims = [
-        _claim("c1", prefix + " to downcoding number one"),
-        _claim("c2", prefix + " to downcoding number two"),  # dupe of c1 by 60ch
-        _claim("c3", "Medicare cut the conversion factor to 33.29 dollars"),
-        _claim("c4", "Prior auth denials rose across the board significantly"),
-        _claim("c5", "Staffing shortages hit small practices hardest of all"),
+        _claim("c1", prefix + " to churn number one"),
+        _claim("c2", prefix + " to churn number two"),  # dupe of c1 by 60ch
+        _claim("c3", "The vendor cut the annual price to 33.29 dollars"),
+        _claim("c4", "Support ticket backlogs rose across the board significantly"),
+        _claim("c5", "Onboarding delays hit small teams hardest of all"),
     ]
     results = [
         VerificationResult(
