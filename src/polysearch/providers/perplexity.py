@@ -13,9 +13,9 @@ Two entry points into the Perplexity API:
 
 ``PerplexityProvider`` adapts ``research`` to the ``ResearchProvider`` protocol,
 returning a ``LayerOutput``. The module-level ``research``/``search`` functions
-keep a signature compatible with the internal pipeline so ported callers (the
-recovery pass, coverage evaluator) transplant without edits — the new params
-(``domain_filter``, ``response_schema``, ``model``/``deep_model``) are optional.
+keep a stable signature so their other callers (the recovery pass, the coverage
+evaluator) call them without edits — the extra params (``domain_filter``,
+``response_schema``, ``model``/``deep_model``) are optional.
 """
 
 from __future__ import annotations

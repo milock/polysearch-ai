@@ -1,7 +1,6 @@
 """Claim extraction from a synthesized report body.
 
-Ported from the internal research pipeline's ``synthesis`` module (the
-sentence / quote / number extraction that feeds the citation verifier). Given
+Sentence, quote, and number extraction that feeds the citation verifier. Given
 the synthesis markdown and the URLs cited in the run, split the text into
 sentences and emit a :class:`Claim` for every sentence carrying a verifiable
 figure or direct quote. Sentences that are pure synthesis (no quote, no number)

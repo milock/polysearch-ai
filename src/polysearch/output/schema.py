@@ -1,9 +1,8 @@
 """Core pydantic models shared across the pipeline.
 
-Field names mirror the internal research pipeline so ported verification,
-synthesis, and refinement logic transplants without renaming. Every model is a
-plain ``pydantic.BaseModel`` and round-trips through ``model_dump`` /
-``model_validate`` losslessly — the pipeline serializes reports to JSON on disk.
+Every model is a plain ``pydantic.BaseModel`` and round-trips through
+``model_dump`` / ``model_validate`` losslessly — the pipeline serializes reports
+to JSON on disk.
 """
 
 from __future__ import annotations
