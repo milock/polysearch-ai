@@ -1,0 +1,23 @@
+# Federal Register rule extractor schema.
+#
+# Unlike a documentation-only config, this file DRIVES extraction: the
+# `patterns` list below is compiled and run directly by
+# polysearch.extractors.authoritative.extract(). Each pattern yields one
+# ExtractedFact per unique match. If a regex has a capturing group, group 1
+# is the fact value; otherwise the whole match is used. `context_window` is
+# the number of surrounding characters to keep as the fact's context.
+#
+# To extend polysearch to another authoritative domain, drop a sibling YAML
+# in this directory (or in $POLYSEARCH_SCHEMA_DIR) with the same shape.
+
+domain: federalregister.gov
+patterns:
+  - name: docket_number
+    regex: '(?:Document|Docket)\s+Number:\s*([0-9A-Za-z-]+)'
+    context_window: 60
+  - name: effective_date
+    regex: '(?i)Effective\s+Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})'
+    context_window: 60
+  - name: cfr_cite
+    regex: '\d+\s+CFR\s+(?:[Pp]arts?\s+)?\d+(?:\.\d+)?'
+    context_window: 40
