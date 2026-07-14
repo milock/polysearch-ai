@@ -33,6 +33,13 @@ import yaml
 from pydantic import BaseModel
 
 
+class SchemaError(ValueError):
+    """Raised when a schema file is malformed — a missing required key or a
+    pattern whose regex does not compile. The message names the offending
+    file, domain, and pattern so a typo in a user-dropped YAML is actionable
+    rather than an opaque traceback."""
+
+
 class Pattern(BaseModel):
     """One named extraction rule. If ``regex`` has a capturing group, group 1
     is the fact value; otherwise the whole match is used."""
@@ -81,10 +88,27 @@ def _default_schema_dir() -> Path:
 
 
 def load_schema(path: str | Path) -> AuthoritativeSchema:
-    """Parse a single schema YAML into an ``AuthoritativeSchema``."""
-    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    """Parse a single schema YAML into an ``AuthoritativeSchema``.
+
+    Validates eagerly: a missing ``domain`` key or a pattern whose ``regex``
+    does not compile raises :class:`SchemaError` naming the file (and, for a
+    bad regex, the domain and pattern) rather than failing later mid-extract.
+    """
+    path = Path(path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if "domain" not in data:
+        raise SchemaError(f"schema file {path} is missing required key 'domain'")
+    domain = data["domain"]
     patterns = [Pattern(**p) for p in data.get("patterns", [])]
-    return AuthoritativeSchema(domain=data["domain"], patterns=patterns)
+    for pattern in patterns:
+        try:
+            _compile(pattern.regex)  # eager: populates cache, surfaces bad regex now
+        except re.error as e:
+            raise SchemaError(
+                f"invalid regex for pattern '{pattern.name}' in schema "
+                f"'{domain}' ({path}): {e}"
+            ) from e
+    return AuthoritativeSchema(domain=domain, patterns=patterns)
 
 
 def load_schemas(

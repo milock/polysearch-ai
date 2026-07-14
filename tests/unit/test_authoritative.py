@@ -16,6 +16,7 @@ from polysearch.extractors.authoritative import (
     AuthoritativeSchema,
     ExtractedFact,
     Pattern,
+    SchemaError,
     extract,
     extract_auto,
     load_schema,
@@ -186,3 +187,47 @@ def test_subdomain_matches(fr_schema: AuthoritativeSchema) -> None:
         "https://sub.federalregister.gov/x", "Document Number: 2025-777", fr_schema
     )
     assert [f.value for f in facts if f.name == "docket_number"] == ["2025-777"]
+
+
+# ── defensive schema loading ────────────────────────────────────────────────
+
+def test_bad_regex_raises_clear_error_at_load(tmp_path: Path) -> None:
+    bad = tmp_path / "broken.yaml"
+    bad.write_text(
+        "domain: broken.gov\n"
+        "patterns:\n"
+        "  - name: unterminated\n"
+        "    regex: '(unclosed'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SchemaError) as excinfo:
+        load_schema(bad)
+    msg = str(excinfo.value)
+    # Error names the pattern, the domain, and the file — not a bare re.error.
+    assert "unterminated" in msg
+    assert "broken.gov" in msg
+    assert str(bad) in msg
+
+
+def test_missing_domain_key_raises_clear_error(tmp_path: Path) -> None:
+    no_domain = tmp_path / "nodomain.yaml"
+    no_domain.write_text(
+        "patterns:\n  - name: x\n    regex: 'y'\n", encoding="utf-8"
+    )
+    with pytest.raises(SchemaError) as excinfo:
+        load_schema(no_domain)
+    msg = str(excinfo.value)
+    assert "domain" in msg
+    assert str(no_domain) in msg
+
+
+def test_load_schemas_surfaces_bad_user_regex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "broken.yaml").write_text(
+        "domain: broken.gov\npatterns:\n  - name: bad\n    regex: '(['\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYSEARCH_SCHEMA_DIR", str(tmp_path))
+    with pytest.raises(SchemaError):
+        load_schemas()
