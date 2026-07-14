@@ -176,6 +176,14 @@ def _status_code(exc: BaseException) -> int | None:
     return status if isinstance(status, int) else None
 
 
+def _retry_after_of(exc: BaseException) -> float | None:
+    """Pull a Retry-After (seconds) off an HTTP error's response headers."""
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None)
+    raw = headers.get("retry-after") if headers else None
+    return ratelimit.parse_retry_after(raw)
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Retry on 429 + 5xx. Inspect status if present, else fall back on message."""
     status = _status_code(exc)
@@ -319,11 +327,18 @@ async def _run_one(
         async for attempt in retryer:
             with attempt:
                 async with _acquire():
-                    resp = await client.chat.completions.create(
-                        model=model,
-                        messages=[{"role": "user", "content": question}],
-                        extra_body=extra,
-                    )
+                    try:
+                        resp = await client.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": question}],
+                            extra_body=extra,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — record then re-raise
+                        # Broadcast a 429 to sibling processes via the shared
+                        # ledger before tenacity handles the retry/backoff.
+                        if _status_code(exc) == 429:
+                            ratelimit.record_429("perplexity", _retry_after_of(exc))
+                        raise
     except Exception as exc:  # noqa: BLE001 — surface as structured error
         duration_ms = int((time.perf_counter() - start) * 1000)
         return PerplexityResult(

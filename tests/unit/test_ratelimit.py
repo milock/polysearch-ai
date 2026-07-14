@@ -352,3 +352,78 @@ async def test_linkedin_enrich_acquires_scrapecreators_provider(monkeypatch):
 
     assert result is not None
     assert calls == ["scrapecreators"]
+
+
+async def test_provider_429_broadcasts_backoff_to_shared_ledger(tmp_path, monkeypatch):
+    """A live 429 with Retry-After, seen by one process's provider call, must
+    push the next slot out for a *second* limiter instance sharing the ledger."""
+    import httpx
+    import respx
+
+    from polysearch.config import Settings
+    from polysearch.providers.linkedin import LinkedInEnricher
+
+    clock = FakeClock()
+    sleep = _fake_sleep_factory(clock)
+    # The default limiter (what the provider's record_429 writes into) shares
+    # the ledger dir + clock with limiter_b below — simulating two processes.
+    default = RateLimiter(state_dir=tmp_path, clock=clock, sleep=sleep)
+    monkeypatch.setattr(ratelimit, "_default_limiter", default)
+
+    with respx.mock:
+        respx.get("https://api.scrapecreators.com/v1/linkedin/profile").mock(
+            return_value=httpx.Response(429, headers={"Retry-After": "30"}, json={})
+        )
+        result = await LinkedInEnricher(Settings(scrapecreators_api_key="k")).enrich(
+            "https://www.linkedin.com/in/x/"
+        )
+    assert result is None  # the 429 surfaced as a failure
+
+    limiter_b = RateLimiter(state_dir=tmp_path, clock=clock, sleep=sleep)
+    start = clock.now
+    async with limiter_b.acquire("scrapecreators", rpm=60):
+        pass
+    assert clock.now >= start + 30.0
+    assert sleep.calls and sleep.calls[-1] >= 30.0
+
+
+async def test_perplexity_run_one_records_429_on_rate_limit(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from tenacity import wait_none
+
+    from polysearch.providers import perplexity as pp
+
+    # Zero out tenacity backoff so the 3 retry attempts run instantly.
+    monkeypatch.setattr(pp, "wait_exponential_jitter", lambda **_kw: wait_none())
+
+    recorded: list[tuple[str, float | None]] = []
+    monkeypatch.setattr(
+        ratelimit,
+        "record_429",
+        lambda provider, retry_after=None: recorded.append((provider, retry_after)),
+    )
+
+    class _RateLimited(Exception):
+        status_code = 429
+
+        def __init__(self) -> None:
+            super().__init__("429 rate limit")
+            self.response = SimpleNamespace(headers={"retry-after": "12"})
+
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(side_effect=_RateLimited())
+
+    result = await pp._run_one(
+        client,
+        "q",
+        model="sonar-pro",
+        recency=None,
+        domain_filter=None,
+        search_mode="web",
+        context_size="low",
+    )
+    assert result.error is not None  # exhausted retries → structured error
+    assert recorded  # at least one 429 broadcast
+    assert recorded[0] == ("perplexity", 12.0)
