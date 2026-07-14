@@ -410,6 +410,28 @@ async def test_authoritative_extraction_skipped_at_quick_depth(tmp_output_dir):
     assert not any("1,250" in c.text for c in spy.seen_claims)
 
 
+async def test_stale_grounder_last_items_not_mined_when_grounding_skipped(
+    tmp_output_dir,
+):
+    # Library-reuse hazard: a reused Providers bundle keeps the prior run's
+    # last_items. If grounding is NOT run this turn, those stale HIGH-tier pages
+    # must not be mined into this report (silent cross-topic contamination).
+    spy = _SpyVerifier()
+    grounder = _GrounderWithHighTierPage()  # last_items already populated (as if prior run)
+    report = await run_research(
+        "medicare payment rule effective date",
+        depth="standard",  # authoritative_top_k == 2
+        settings=Settings(),
+        providers=_providers(grounder=grounder, verifier=spy),
+        enabled_layers={"research"},  # grounding excluded this run
+        max_iterations=0,
+        output_dir=tmp_output_dir,
+    )
+    reasons = " | ".join(report.classification.get("reasons", []))
+    assert "authoritative extraction:" not in reasons
+    assert not any("1,250" in c.text for c in spy.seen_claims)
+
+
 async def test_max_iterations_zero_disables_loop(tmp_output_dir, monkeypatch):
     # Even at standard depth (profile allows 2), --max-iterations 0 wins.
     monkeypatch.setattr("openai.AsyncOpenAI", _FakeOpenAI)

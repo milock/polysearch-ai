@@ -299,9 +299,12 @@ async def run_research(
     # ``last_items``; the projected SourceResults carry only a snippet, so
     # structured extraction runs against the markdown here. profile.authoritative_top_k
     # caps how many HIGH-tier pages are mined (quick 0 / standard 2 / deep 4).
+    # Gated on grounding having run THIS turn: a reused Providers bundle keeps the
+    # prior run's last_items, so mining them when grounding was skipped this run
+    # would splice a previous topic's pages into this report.
     authoritative_facts: list[Any] = []
     authoritative_pages = 0
-    if profile.authoritative_top_k > 0:
+    if profile.authoritative_top_k > 0 and "grounding" in layer_by_name:
         last_items = getattr(providers.grounder, "last_items", None) or []
         high_pages = [
             it
