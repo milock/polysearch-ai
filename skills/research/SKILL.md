@@ -1,6 +1,6 @@
 ---
 name: research
-description: 'Run a research topic through the polysearch pipeline — parallel Perplexity sub-question research, Firecrawl web grounding, community signal, and optional vector search, with citation verification and source-tier classification. Produces a saved, auditable markdown report. Use when asked to research, investigate, fact-check, compare options, do a deep dive, or gather cited evidence on any topic.'
+description: 'Run a research topic through the polysearch pipeline: parallel Perplexity sub-question research, Firecrawl web grounding, and community signal, with citation verification and source-tier classification. Produces a saved, auditable markdown report. Use when asked to research, investigate, fact-check, compare options, do a deep dive, or gather cited evidence on any topic.'
 argument-hint: "[topic]"
 ---
 
@@ -52,7 +52,7 @@ a Firecrawl error.
 |---|---|---|---|---|---|
 | `quick` | 45–60s | 2 | 3 | 0 iterations | A single factual question, a definition, a fast sanity check |
 | `standard` (default) | 90–180s | 4 | 5 | 2 iterations | Most research — a topic with a few angles |
-| `deep` | 3–5m | 6–8 | 10 | 4 iterations | High-stakes, multi-faceted questions where you need breadth and want the deep-research layer on |
+| `deep` | 3–5m | 6 | 10 | 4 iterations | High-stakes, multi-faceted questions where you need breadth and want the deep-research layer on |
 
 ```bash
 polysearch --topic "<question>" --depth deep
@@ -146,7 +146,7 @@ Do not treat all citations as equal.
 - **MEDIUM** — reputable secondary and trade press.
 - **LOW** — opinion, marketing, and unverified pages. Vendor blogs land here even on otherwise-reputable domains.
 - **COMMUNITY** — forum and social posts. This is an engagement signal — attention, not proof. A claim resting only on COMMUNITY sources is directional, not established.
-- **SME** — internal knowledge base hits, when a vector corpus is wired in.
+- **SME** — internal sources, when you supply your own source provider through the Python API (`providers=`). Not wired to any key in the default install.
 - **UNKNOWN** — not in the domain map. Treat with caution and verify independently.
 
 Sources on the hard-blocked list (spam, content farms) are dropped before

@@ -1,6 +1,6 @@
 {
   "name": "polysearch",
-  "description": "Modular, multi-source research pipeline with citation tier classification. Runs a topic through Perplexity, web grounding, community signal, and optional vector search in parallel, verifies the cited sources against scraped pages, and writes a tiered, auditable report.",
+  "description": "Modular, multi-source research pipeline with citation tier classification. Runs a topic through Perplexity, web grounding, and community signal in parallel, verifies the cited sources against scraped pages, and writes a tiered, auditable report.",
   "version": "0.1.0",
   "author": {
     "name": "milock"

@@ -141,7 +141,7 @@ all-or-nothing requirement.
 | `PERPLEXITY_API_KEY` | Sub-question research and the deep-research layer |
 | `FIRECRAWL_API_KEY` | Web grounding and citation-verification scrapes |
 | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | Synthesis |
-| `QDRANT_URL` + `QDRANT_API_KEY` | Vector search over your own corpus |
+| `SCRAPECREATORS_API_KEY`, `YOUTUBE_API_KEY`, `GITHUB_TOKEN`, `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` | Extra community source connectors (each optional; set only the ones you want) |
 
 See `.env.example` for the full list, and `examples/tiers.md` for what each
 combination gets you and what it costs.
