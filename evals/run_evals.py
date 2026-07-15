@@ -238,8 +238,30 @@ def run_internal_target(task: dict, out_dir: Path) -> tuple[dict, str, Path]:
     return _collect_report(out_dir, task["topic"])
 
 
-def _default_judge(topic: str, key_facts: list[str], report_md: str) -> JudgeResult:
-    return judge_mod.judge_report(topic, key_facts, report_md)
+# Monotonic timestamp of the last real judge call, for inter-call pacing. Lives
+# here (not in judge_report) so only production sweeps pace — tests inject their
+# own judge_fn and never sleep.
+_last_judge_call_ts = 0.0
+
+
+def make_default_judge(
+    full_md: bool = False,
+) -> Callable[[str, list[str], str], JudgeResult]:
+    """Build the production judge callable: paces calls by the configured spacing
+    (POLYSEARCH_EVAL_JUDGE_RPS or 0.5s) so a multi-task sweep doesn't burst the org
+    rate limit, then delegates to the retrying ``judge_report``."""
+    import time
+
+    def _judge(topic: str, key_facts: list[str], report_md: str) -> JudgeResult:
+        global _last_judge_call_ts
+        interval = judge_mod.judge_spacing_sec()
+        wait = _last_judge_call_ts + interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_judge_call_ts = time.monotonic()
+        return judge_mod.judge_report(topic, key_facts, report_md, full_md=full_md)
+
+    return _judge
 
 
 def _persist_artifacts(md_path: Path, task_dir: Path) -> Optional[str]:
@@ -577,6 +599,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip LLM judging (programmatic metrics only).",
     )
     parser.add_argument(
+        "--judge-full-md",
+        action="store_true",
+        help="Feed the whole report md to the judge (default strips process/audit sections).",
+    )
+    parser.add_argument(
         "--output-root",
         help="Where per-task reports persist (default: evals/results/<label>).",
     )
@@ -600,7 +627,7 @@ def main(argv: list[str] | None = None) -> int:
     tasks = select_tasks(tasks, ids=args.tasks)
     tasks = apply_depth_override(tasks, args.depth_override)
 
-    judge_fn = None if args.no_judge else _default_judge
+    judge_fn = None if args.no_judge else make_default_judge(args.judge_full_md)
 
     out_root = Path(args.output_root) if args.output_root else RESULTS_ROOT / args.rounds_label
 

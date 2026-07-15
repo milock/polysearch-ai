@@ -135,12 +135,74 @@ class JudgeResult:
         }
 
 
-def build_judge_prompt(topic: str, key_facts: list[str], report_md: str) -> str:
+# H2 sections that are the pipeline's own process/audit, not report content. The
+# judge evaluates the end state, not the machinery — and must never dock citation
+# accuracy on the pipeline's own citation-integrity tally (which lists its
+# NUMBER_MISMATCH/URL_DEAD findings). Matched case-insensitively as substrings of
+# the H2 heading text; every keyword here is generic (no internal vocabulary).
+_PROCESS_SECTION_KEYWORDS: tuple[str, ...] = (
+    "pipeline decisions",
+    "pipeline stats",
+    "pipeline errors",
+    "refinement trace",
+    "citation integrity",
+    "style audit",
+)
+# H3 subsections inside kept sections that are audit residue (e.g. the "Excluded
+# (dead links)" lists under Sources by Tier, or "Failed citations" details).
+_PROCESS_SUBSECTION_KEYWORDS: tuple[str, ...] = ("excluded", "failed citations")
+
+_H2_RE = re.compile(r"^## +(.*)$")
+_H3_RE = re.compile(r"^### +(.*)$")
+
+
+def strip_process_sections(md: str) -> str:
+    """Remove the pipeline's process/audit sections from a report md.
+
+    Excises whole H2 sections whose heading names a process/audit section, and
+    audit H3 subsections (Excluded lists, Failed-citations details) inside kept
+    sections. Leaves the synthesis body and the Sources-by-Tier listing so the
+    judge sees the report's end state, not the machinery that produced it.
+    Works for both report shapes by matching heading text, not position.
+    """
+    lines = md.splitlines()
+    out: list[str] = []
+    skip_h2 = False
+    skip_h3 = False
+    for line in lines:
+        h2 = _H2_RE.match(line)
+        if h2:
+            heading = h2.group(1).lower()
+            skip_h2 = any(k in heading for k in _PROCESS_SECTION_KEYWORDS)
+            skip_h3 = False  # a new H2 clears any H3-skip
+            if skip_h2:
+                continue
+            out.append(line)
+            continue
+        h3 = _H3_RE.match(line)
+        if h3 and not skip_h2:
+            heading = h3.group(1).lower()
+            skip_h3 = any(k in heading for k in _PROCESS_SUBSECTION_KEYWORDS)
+            if skip_h3:
+                continue
+        if skip_h2 or skip_h3:
+            continue
+        out.append(line)
+    return "\n".join(out).strip() + "\n"
+
+
+def build_judge_prompt(
+    topic: str, key_facts: list[str], report_md: str, *, full_md: bool = False
+) -> str:
     """Assemble the judge user prompt: rubric + the task's key facts + the report.
 
     The report markdown is the *only* view of the run the judge gets — this is
-    end-state evaluation, not process evaluation.
+    end-state evaluation, not process evaluation. By default the pipeline's own
+    process/audit sections are stripped (see :func:`strip_process_sections`);
+    ``full_md=True`` is an escape hatch that feeds the whole report unmodified.
     """
+    if not full_md:
+        report_md = strip_process_sections(report_md)
     lines = [
         "You are a strict evaluator of a research report. Score the report below "
         "on each dimension from 0.0 (worst) to 1.0 (best) and give a one-line "
@@ -216,17 +278,19 @@ def _judge_cost(usage: Any) -> float:
     )
 
 
-# How many times to retry a rate-limited (429) judge call before giving up, and
-# the backoff floor. Large reports (tens of thousands of tokens) routinely bump
-# the model's tokens-per-minute ceiling during a sweep, and that is transient —
-# a plain failure there wastes the whole task's run, so we wait and retry.
+# Retry budget for a transient judge failure. Large reports (tens of thousands of
+# tokens) routinely bump the model's tokens-per-minute ceiling during a sweep, and
+# that is transient — a plain failure there wastes the whole task's run.
 JUDGE_MAX_RETRIES = 5
-_BACKOFF_BASE_SEC = 8.0
+_BACKOFF_MULTIPLIER_SEC = 4.0
+_BACKOFF_MIN_SEC = 4.0
 _BACKOFF_CAP_SEC = 60.0
-_RETRY_AFTER_RE = re.compile(r"try again in ([0-9.]+)s")
+# Default inter-call spacing (seconds) so a multi-task sweep doesn't burst the org
+# rate limit. Overridable via POLYSEARCH_EVAL_JUDGE_RPS (requests per second).
+_DEFAULT_JUDGE_SPACING_SEC = 0.5
 
 
-def _is_rate_limit(exc: Exception) -> bool:
+def _is_rate_limit(exc: BaseException) -> bool:
     """Whether ``exc`` is an OpenAI rate-limit (429), by type, status, or message."""
     if type(exc).__name__ == "RateLimitError":
         return True
@@ -236,13 +300,36 @@ def _is_rate_limit(exc: Exception) -> bool:
     return "429" in text or "rate limit" in text.lower()
 
 
-def _retry_delay(exc: Exception, attempt: int) -> float:
-    """Seconds to wait before the next attempt: the server's suggested wait (plus
-    a small buffer) when it gives one, else capped exponential backoff."""
-    hint = _RETRY_AFTER_RE.search(str(exc))
-    if hint:
-        return float(hint.group(1)) + 1.0
-    return min(_BACKOFF_BASE_SEC * (2**attempt), _BACKOFF_CAP_SEC)
+def _is_server_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is a retryable 5xx / connection / timeout server error."""
+    if type(exc).__name__ in {
+        "InternalServerError",
+        "APIConnectionError",
+        "APITimeoutError",
+    }:
+        return True
+    code = getattr(exc, "status_code", None)
+    return isinstance(code, int) and 500 <= code < 600
+
+
+def _should_retry_judge(exc: BaseException) -> bool:
+    return _is_rate_limit(exc) or _is_server_error(exc)
+
+
+def judge_spacing_sec() -> float:
+    """Inter-call spacing for the judge, from ``POLYSEARCH_EVAL_JUDGE_RPS`` (as
+    ``1/rps``) or the 0.5s default. Used by the sweep to pace judge calls."""
+    import os
+
+    rps = os.environ.get("POLYSEARCH_EVAL_JUDGE_RPS")
+    if rps:
+        try:
+            value = float(rps)
+            if value > 0:
+                return 1.0 / value
+        except ValueError:
+            pass
+    return _DEFAULT_JUDGE_SPACING_SEC
 
 
 def judge_report(
@@ -252,6 +339,7 @@ def judge_report(
     *,
     client: Any | None = None,
     api_key: str | None = None,
+    full_md: bool = False,
     max_retries: int = JUDGE_MAX_RETRIES,
     sleep_fn: Any = None,
 ) -> JudgeResult:
@@ -259,11 +347,19 @@ def judge_report(
 
     ``client`` (an OpenAI-shaped client exposing ``chat.completions.create``) is
     injected in tests; in production it is built from ``api_key`` /
-    ``OPENAI_API_KEY``. A rate-limit (429) is retried up to ``max_retries`` times
-    with backoff (honoring the server's suggested wait); any other transport error
-    is surfaced as an ERROR result — the sweep never crashes on a single bad call.
-    ``sleep_fn`` is injected in tests so retries don't actually wait.
+    ``OPENAI_API_KEY``. A rate-limit (429) or 5xx is retried up to ``max_retries``
+    times with exponential backoff (via tenacity); any other error is surfaced as
+    an ERROR result — the sweep never crashes on a single bad call. ``full_md``
+    feeds the whole report unstripped. ``sleep_fn`` is injected in tests so retry
+    backoff doesn't actually wait.
     """
+    from tenacity import (
+        Retrying,
+        retry_if_exception,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
     if client is None:
         import os
 
@@ -275,31 +371,37 @@ def judge_report(
 
         sleep_fn = time.sleep
 
-    prompt = build_judge_prompt(topic, key_facts, report_md)
-    for attempt in range(max_retries + 1):
-        try:
-            completion = client.chat.completions.create(
-                model=JUDGE_MODEL,
-                max_completion_tokens=_MAX_TOKENS,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "report_evaluation",
-                        "strict": True,
-                        "schema": JUDGE_SCHEMA,
-                    },
+    prompt = build_judge_prompt(topic, key_facts, report_md, full_md=full_md)
+
+    def _call() -> Any:
+        return client.chat.completions.create(
+            model=JUDGE_MODEL,
+            max_completion_tokens=_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "report_evaluation",
+                    "strict": True,
+                    "schema": JUDGE_SCHEMA,
                 },
-            )
-        except Exception as exc:  # noqa: BLE001 — one bad judge call must not crash the sweep
-            if attempt < max_retries and _is_rate_limit(exc):
-                sleep_fn(_retry_delay(exc, attempt))
-                continue
-            return JudgeResult(error=f"judge call failed: {exc}")
+            },
+        )
 
-        content = completion.choices[0].message.content or ""
-        result = parse_judge_response(content)
-        result.cost_usd = _judge_cost(getattr(completion, "usage", None))
-        return result
+    try:
+        completion = Retrying(
+            retry=retry_if_exception(_should_retry_judge),
+            stop=stop_after_attempt(max_retries + 1),
+            wait=wait_exponential(
+                multiplier=_BACKOFF_MULTIPLIER_SEC, min=_BACKOFF_MIN_SEC, max=_BACKOFF_CAP_SEC
+            ),
+            sleep=sleep_fn,
+            reraise=True,
+        )(_call)
+    except Exception as exc:  # noqa: BLE001 — one bad judge call must not crash the sweep
+        return JudgeResult(error=f"judge call failed: {exc}")
 
-    return JudgeResult(error="judge call failed: retries exhausted")  # pragma: no cover
+    content = completion.choices[0].message.content or ""
+    result = parse_judge_response(content)
+    result.cost_usd = _judge_cost(getattr(completion, "usage", None))
+    return result
