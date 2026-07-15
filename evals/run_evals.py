@@ -152,6 +152,30 @@ def apply_depth_override(tasks: list[dict], depth: str | None) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Target runners
 # --------------------------------------------------------------------------- #
+def _match_report_json(json_paths: list[Path], topic: str) -> Path | None:
+    """The newest json whose stem ends with the topic's slug, or ``None``.
+
+    Slug-matching means a directory holding many reports never hands back the
+    wrong task's file. Shared by the live collector (which falls back to newest)
+    and the rescore finder (which treats no match as SKIPPED).
+    """
+    slug = slugify(topic)
+    matched = sorted(
+        (p for p in json_paths if p.stem.endswith(slug)),
+        key=lambda p: p.stat().st_mtime,
+    )
+    return matched[-1] if matched else None
+
+
+def _load_report(json_path: Path) -> tuple[dict, str, Path]:
+    """Load a report json and its sibling ``.md`` (empty md when none). Returns
+    ``(report, md, md_path)``."""
+    report = json.loads(json_path.read_text(encoding="utf-8"))
+    md_path = json_path.with_suffix(".md")
+    md = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+    return report, md, md_path
+
+
 def _collect_report(out_dir: Path, topic: str) -> tuple[dict, str, Path]:
     """Load the report json for ``topic`` from ``out_dir`` and its sibling md.
 
@@ -162,13 +186,8 @@ def _collect_report(out_dir: Path, topic: str) -> tuple[dict, str, Path]:
     jsons = sorted(out_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
     if not jsons:
         raise RuntimeError(f"target produced no report json in {out_dir}")
-    slug = slugify(topic)
-    matched = [p for p in jsons if p.stem.endswith(slug)]
-    json_path = matched[-1] if matched else jsons[-1]
-    report = json.loads(json_path.read_text(encoding="utf-8"))
-    md_path = json_path.with_suffix(".md")
-    md = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
-    return report, md, md_path
+    json_path = _match_report_json(jsons, topic) or jsons[-1]
+    return _load_report(json_path)
 
 
 def run_public_target(task: dict, out_dir: Path) -> tuple[dict, str, Path]:
@@ -391,6 +410,7 @@ def _summary(rows: list[RunRow]) -> dict[str, Any]:
         "tasks": len(rows),
         "ok": len(ok),
         "errors": sum(1 for r in rows if r.status == "ERROR"),
+        "skipped": sum(1 for r in rows if r.status == "SKIPPED"),
         "mean_judge_overall": _round_opt(_mean_opt([r.judge.overall for r in judged])),
         "mean_verification_rate": _round_opt(
             _mean_opt([r.metrics.verification_rate for r in ok])
@@ -429,7 +449,8 @@ def render_scoreboard_md(rows: list[RunRow], *, target: str, label: str) -> str:
     out: list[str] = [
         f"# Eval Scoreboard — {label} · {target}",
         "",
-        f"- Tasks: {summary['tasks']} · OK: {summary['ok']} · Errors: {summary['errors']}",
+        f"- Tasks: {summary['tasks']} · OK: {summary['ok']} · "
+        f"Errors: {summary['errors']} · Skipped: {summary['skipped']}",
         f"- Mean judge overall: {_fmt(summary['mean_judge_overall'])} "
         f"(gate ≥ {MIN_JUDGE_OVERALL})",
         f"- Mean claim-level verification: {_fmt(summary['mean_verification_rate'])} "
@@ -457,10 +478,11 @@ def render_scoreboard_md(rows: list[RunRow], *, target: str, label: str) -> str:
         "----------|----------|------|--------|-------|------|-----|--------|"
     )
     for r in rows:
-        if r.status == "ERROR" and r.metrics is None:
+        if r.metrics is None:
+            # ERROR (crash) or SKIPPED (no artifact) — no metrics to render.
             out.append(
-                f"| {r.task_id} | {r.category} | ERROR | - | - | - | - | - | - | - | "
-                "- | - | - | - | - |"
+                f"| {r.task_id} | {r.category} | {r.status} | - | - | - | - | - | - | "
+                "- | - | - | - | - | - |"
             )
             continue
         m = r.metrics
