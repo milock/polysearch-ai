@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from evals import judge, metrics, run_evals
+from evals import judge, metrics, report_adapter, run_evals
 
 
 # --------------------------------------------------------------------------- #
@@ -109,9 +109,19 @@ def _task() -> dict:
 # --------------------------------------------------------------------------- #
 # metrics.compute_metrics
 # --------------------------------------------------------------------------- #
-def test_verification_rate_from_fixture() -> None:
+def test_verification_rate_is_claim_level() -> None:
+    # Gated metric is claim-level claims_supported/claims_total (2/2), NOT the
+    # pair-level 4/5 that poisoned round 1.
     m = metrics.compute_metrics(_fixture_report(), _task())
-    assert m.verification_rate == pytest.approx(4 / 5)
+    assert m.verification_rate == pytest.approx(2 / 2)
+    assert m.claims_supported == 2
+    assert m.claims_total == 2
+
+
+def test_citation_pair_rate_is_secondary() -> None:
+    m = metrics.compute_metrics(_fixture_report(), _task())
+    assert m.citation_pair_rate == pytest.approx(4 / 5)
+    assert m.total_citations == 5
 
 
 def test_tier_mix_high_medium_fraction() -> None:
@@ -218,10 +228,10 @@ def test_sweep_isolates_crashing_task(tmp_path: Path) -> None:
          "key_facts": ["x"], "expects_refinement": False},
     ]
 
-    def fake_target(task: dict, out_dir: Path) -> tuple[dict, str]:
+    def fake_target(task: dict, out_dir: Path) -> tuple[dict, str, Path]:
         if task["id"] == "bad":
             raise RuntimeError("simulated pipeline crash")
-        return _fixture_report(), _fixture_report()["synthesis_md"]
+        return _fixture_report(), _fixture_report()["synthesis_md"], out_dir / "r.md"
 
     def fake_judge(topic: str, key_facts: list[str], report_md: str) -> judge.JudgeResult:
         return judge.JudgeResult.from_scores(
@@ -250,8 +260,8 @@ def test_sweep_marks_error_when_judge_returns_parse_error(tmp_path: Path) -> Non
          "key_facts": ["federal funds rate near 4.25 percent"], "expects_refinement": False},
     ]
 
-    def fake_target(task: dict, out_dir: Path) -> tuple[dict, str]:
-        return _fixture_report(), _fixture_report()["synthesis_md"]
+    def fake_target(task: dict, out_dir: Path) -> tuple[dict, str, Path]:
+        return _fixture_report(), _fixture_report()["synthesis_md"], out_dir / "r.md"
 
     def fake_judge(topic: str, key_facts: list[str], report_md: str) -> judge.JudgeResult:
         return judge.JudgeResult(error="judge parse failure")
@@ -598,3 +608,240 @@ def test_quality_bar_fails_when_refinement_never_triggers() -> None:
     passed, failures = run_evals.evaluate_quality_bar([row])
     assert not passed
     assert any("refinement" in f.lower() for f in failures)
+
+
+# =========================================================================== #
+# Round-1 harness fixes (F1–F5)
+# =========================================================================== #
+
+def _internal_report() -> dict:
+    """A report in the INTERNAL pipeline shape: different top-level field names
+    than the public schema (total_cost_usd, duration_sec, web_items,
+    refinement_traces, synthesis object). verification is identical to public."""
+    return {
+        "topic": "example generic topic",
+        "depth": "deep",
+        "total_cost_usd": 3.33,
+        "duration_sec": 1049.2,
+        "web_items": [
+            {"url": "https://a.gov/1", "title": "A", "tier": "HIGH"},
+            {"url": "https://b.com/2", "title": "B", "tier": "MEDIUM"},
+            {"url": "https://c.io/3", "title": "C", "tier": "UNKNOWN"},
+            {"url": "https://d.dead/4", "title": "D", "tier": "LOW"},
+        ],
+        "kb_hits": [{"title": "kb", "tier": "SME"}],  # a second tiered top-level list
+        "refinement_traces": [
+            {"iteration": 1, "followup_queries": ["q1", "q2"], "stopped_reason": None},
+            {"iteration": 2, "followup_queries": ["q3"], "stopped_reason": None},
+            {"iteration": 3, "followup_queries": [], "stopped_reason": "no_new_queries"},
+        ],
+        "synthesis": {
+            "executive_summary": "The federal funds rate is near 4.25 percent.",
+            "key_findings": ["Inflation cooled to about 3 percent."],
+            "quality_notes": "Sources are mostly primary.",
+        },
+        "verification": {
+            "total_citations": 200,
+            "verified_ok": 25,
+            "claims_total": 16,
+            "claims_supported": 16,
+            "results": [{"claim_id": "c1", "url": "https://d.dead/4", "status": "URL_DEAD"}],
+            "total_cost_usd": 0.5,
+            "total_duration_ms": 5000,
+        },
+    }
+
+
+# ---- F1: internal-report adapter ------------------------------------------ #
+def test_shape_detection() -> None:
+    assert report_adapter.detect_shape(_fixture_report()) == "public"
+    assert report_adapter.detect_shape(_internal_report()) == "internal"
+    assert report_adapter.detect_shape({"topic": "x"}) == "unknown"
+
+
+def test_internal_report_cost_and_duration_extract() -> None:
+    task = {"id": "i", "depth": "deep", "expects_refinement": True, "key_facts": ["x"]}
+    m = metrics.compute_metrics(_internal_report(), task)
+    assert m.cost_usd == pytest.approx(3.33)  # from total_cost_usd, NOT a silent 0
+    assert m.duration_sec == pytest.approx(1049.2)  # from duration_sec
+    assert m.report_shape == "internal"
+
+
+def test_internal_report_tier_mix_extract() -> None:
+    task = {"id": "i", "depth": "deep", "expects_refinement": True, "key_facts": ["x"]}
+    m = metrics.compute_metrics(_internal_report(), task)
+    # web_items (4) + kb_hits (1) = 5 tiered sources; HIGH+MEDIUM = 2.
+    assert m.total_sources == 5
+    assert m.tier_mix_high_medium == pytest.approx(2 / 5)
+
+
+def test_internal_report_refinement_extract() -> None:
+    task = {"id": "i", "depth": "deep", "expects_refinement": True, "key_facts": ["x"]}
+    m = metrics.compute_metrics(_internal_report(), task)
+    # Two traces ran follow-up queries; the third (empty) did not.
+    assert m.refinement_rounds == 2
+    assert m.refinement_ok is True
+
+
+def test_internal_report_verification_claim_level() -> None:
+    task = {"id": "i", "depth": "deep", "expects_refinement": True, "key_facts": ["x"]}
+    m = metrics.compute_metrics(_internal_report(), task)
+    assert m.verification_rate == pytest.approx(16 / 16)  # claim-level
+    assert m.citation_pair_rate == pytest.approx(25 / 200)  # pair-level secondary
+    assert m.dead_links == 1
+
+
+def test_missing_field_yields_none_and_warning_not_zero() -> None:
+    """A report missing cost/duration/verification/sources must produce None +
+    warnings, never a silent zero that poisons the aggregate."""
+    report = {"topic": "x", "depth": "standard", "synthesis_md": "body text here"}
+    task = {"id": "x", "depth": "standard", "expects_refinement": False, "key_facts": ["x"]}
+    m = metrics.compute_metrics(report, task)
+    assert m.cost_usd is None
+    assert m.duration_sec is None
+    assert m.verification_rate is None
+    assert m.tier_mix_high_medium is None
+    assert m.refinement_rounds is None
+    assert m.warnings  # non-empty
+    assert any("cost" in w for w in m.warnings)
+    assert any("verification" in w for w in m.warnings)
+
+
+def test_gate_fails_when_verification_unavailable_everywhere() -> None:
+    """A poisoned round where no run has verification must FAIL, not pass by
+    having nothing to measure."""
+    report = {"topic": "x", "depth": "standard", "synthesis_md": "body"}
+    task = {"id": "x", "depth": "standard", "expects_refinement": False, "key_facts": ["x"]}
+    m = metrics.compute_metrics(report, task)
+    jr = judge.JudgeResult.from_scores(
+        {
+            "factual_accuracy": {"score": 0.9, "justification": "j"},
+            "citation_accuracy": {"score": 0.9, "justification": "j"},
+            "completeness": {"score": 0.9, "justification": "j"},
+            "source_quality": {"score": 0.9, "justification": "j"},
+            "coherence": {"score": 0.9, "justification": "j"},
+            "overall": {"score": 0.9, "pass": True, "justification": "j"},
+        }
+    )
+    row = run_evals.RunRow(task_id="x", category="FACTUAL", status="OK", metrics=m, judge=jr)
+    passed, failures = run_evals.evaluate_quality_bar([row])
+    assert not passed
+    assert any("verification" in f.lower() for f in failures)
+
+
+# ---- F2: coverage extraction against report md ---------------------------- #
+def test_coverage_matches_paraphrased_facts_in_md() -> None:
+    """A real-ish report md where 2 of 3 facts appear phrased differently → ~0.67.
+    The third fact is genuinely absent."""
+    md = (
+        "# Research: monetary policy\n\n"
+        "## Executive Summary\n\n"
+        "The Fed has held the federal funds target range at 3.50% to 3.75% since "
+        "December.\n\n"
+        "## Key Findings\n\n"
+        "- Over the past year, rates moved downward as policymakers cut "
+        "repeatedly before pausing.\n"
+        "- Labor market indicators stayed resilient.\n"
+    )
+    facts = [
+        "federal funds target range set by the Fed",   # present, reordered/filler
+        "rates moved downward over the past year",      # present, reordered/filler
+        "the current unemployment rate percentage",     # absent
+    ]
+    cov, covered, total = metrics._key_fact_coverage(facts, md)
+    assert total == 3
+    assert covered == 2
+    assert cov == pytest.approx(2 / 3)
+
+
+def test_coverage_prefers_collected_md_over_json_synthesis() -> None:
+    """Coverage must read the collected md (which internal reports carry) rather
+    than a public-only synthesis_md json field."""
+    internal = _internal_report()  # has no synthesis_md field
+    md = (
+        "The federal funds rate is near 4.25 percent. Inflation cooled to about "
+        "3 percent. Rates fell over the past year."
+    )
+    task = {
+        "id": "i", "depth": "deep", "expects_refinement": True,
+        "key_facts": ["federal funds rate near 4.25 percent",
+                      "inflation cooled to about 3 percent",
+                      "rate fell over the past year"],
+    }
+    m = metrics.compute_metrics(internal, task, report_md=md)
+    assert m.key_fact_coverage == pytest.approx(1.0)
+
+
+def test_coverage_none_when_no_text() -> None:
+    report = {"topic": "x", "depth": "standard"}  # no md, no synthesis
+    task = {"id": "x", "depth": "standard", "expects_refinement": False,
+            "key_facts": ["alpha", "beta"]}
+    m = metrics.compute_metrics(report, task)
+    assert m.key_fact_coverage is None
+    assert any("coverage" in w.lower() for w in m.warnings)
+
+
+def test_coverage_splitter_preserves_decimals() -> None:
+    # "3.75%" must not be split on its period into "3" / "75%".
+    units = metrics._sentence_units("The range is 3.50% to 3.75% today.")
+    assert any("3.75%" in u for u in units)
+
+
+# ---- F4: timeout env override --------------------------------------------- #
+def test_timeout_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYSEARCH_EVAL_TIMEOUT_SEC", raising=False)
+    assert run_evals.timeout_sec() == 2700
+
+
+def test_timeout_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYSEARCH_EVAL_TIMEOUT_SEC", "3600")
+    assert run_evals.timeout_sec() == 3600
+
+
+def test_timeout_env_garbage_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYSEARCH_EVAL_TIMEOUT_SEC", "not-a-number")
+    assert run_evals.timeout_sec() == 2700
+
+
+# ---- F5: artifact persistence --------------------------------------------- #
+def test_sweep_persists_artifacts_and_records_path(tmp_path: Path) -> None:
+    tasks = [
+        {"id": "good", "topic": "example generic topic", "depth": "standard",
+         "category": "FACTUAL", "key_facts": ["federal funds rate near 4.25 percent"],
+         "expects_refinement": False},
+    ]
+
+    def fake_target(task: dict, out_dir: Path) -> tuple[dict, str, Path]:
+        # Simulate a target that writes its md+json into out_dir.
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = run_evals.slugify(task["topic"])
+        md_path = out_dir / f"2026-07-15-{stem}.md"
+        md_path.write_text("# report\n\nbody", encoding="utf-8")
+        (out_dir / f"2026-07-15-{stem}.json").write_text("{}", encoding="utf-8")
+        return _fixture_report(), "# report\n\nbody", md_path
+
+    rows = run_evals.run_sweep(
+        tasks, target="public", out_root=tmp_path, run_target=fake_target, judge_fn=None
+    )
+    row = rows[0]
+    assert row.status == "OK"
+    # Report path is recorded relative to the scoreboard dir (out_root/target).
+    assert row.report_path is not None
+    assert row.report_path.startswith("good/")
+    persisted = tmp_path / "public" / row.report_path
+    assert persisted.exists()
+    # And it appears in the scoreboard json.
+    payload = run_evals.build_scoreboard_json(rows, target="public", label="r1")
+    assert payload["rows"][0]["report_path"] == row.report_path
+
+
+def test_collect_report_prefers_slug_match(tmp_path: Path) -> None:
+    # Two reports in one dir; collection must return the one matching the topic.
+    (tmp_path / "2026-07-15-other-topic.json").write_text('{"topic":"other"}', encoding="utf-8")
+    (tmp_path / "2026-07-15-other-topic.md").write_text("other", encoding="utf-8")
+    slug = run_evals.slugify("my special topic")
+    (tmp_path / f"2026-07-15-{slug}.json").write_text('{"topic":"my special topic"}', encoding="utf-8")
+    (tmp_path / f"2026-07-15-{slug}.md").write_text("mine", encoding="utf-8")
+    report, md, md_path = run_evals._collect_report(tmp_path, "my special topic")
+    assert report["topic"] == "my special topic"
+    assert md == "mine"
