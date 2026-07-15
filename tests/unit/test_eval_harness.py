@@ -478,6 +478,101 @@ def test_quality_bar_fails_on_low_judge_mean() -> None:
     assert any("judge" in f.lower() for f in failures)
 
 
+def _report_with_n_refinement_rounds(n: int) -> dict:
+    report = _fixture_report()
+    report["refinement_iterations"] = [
+        {
+            "iteration": i + 1,
+            "verdict": {"goal_met": False, "coverage_score": 0.5},
+            "queries_run": [f"follow-up query {i + 1}"],
+            "new_sources": 1,
+            "new_claims": 1,
+            "cost_usd": 0.01,
+            "stopped_reason": "cost_ceiling",
+        }
+        for i in range(n)
+    ]
+    return report
+
+
+def test_refinement_ceiling_is_per_depth() -> None:
+    # quick 0 / standard 2 / deep 4, read from polysearch.config.DEPTH_PROFILES.
+    assert metrics.refinement_ceiling_for_depth("quick") == 0
+    assert metrics.refinement_ceiling_for_depth("standard") == 2
+    assert metrics.refinement_ceiling_for_depth("deep") == 4
+
+
+def test_standard_task_three_iterations_flags_ceiling_violation() -> None:
+    report = _report_with_n_refinement_rounds(3)
+    task = {
+        "id": "std-over", "topic": "t", "depth": "standard", "category": "COMPARISON",
+        "key_facts": ["federal funds rate near 4.25 percent",
+                      "inflation cooled to about 3 percent",
+                      "rate fell over the past year"],
+        "expects_refinement": True,
+    }
+    m = metrics.compute_metrics(report, task)
+    assert m.refinement_rounds == 3
+    assert m.refinement_ceiling == 2
+    assert m.refinement_within_ceiling is False
+
+    jr = judge.JudgeResult.from_scores(
+        {
+            "factual_accuracy": {"score": 0.9, "justification": "j"},
+            "citation_accuracy": {"score": 0.9, "justification": "j"},
+            "completeness": {"score": 0.9, "justification": "j"},
+            "source_quality": {"score": 0.9, "justification": "j"},
+            "coherence": {"score": 0.9, "justification": "j"},
+            "overall": {"score": 0.9, "pass": True, "justification": "j"},
+        }
+    )
+    row = run_evals.RunRow(task_id="std-over", category="COMPARISON", status="OK", metrics=m, judge=jr)
+    passed, failures = run_evals.evaluate_quality_bar([row])
+    assert not passed
+    assert any("ceiling" in f.lower() for f in failures)
+
+
+def test_deep_task_four_iterations_is_within_ceiling() -> None:
+    report = _report_with_n_refinement_rounds(4)
+    task = {
+        "id": "deep-ok", "topic": "t", "depth": "deep", "category": "TECHNICAL",
+        "key_facts": ["federal funds rate near 4.25 percent",
+                      "inflation cooled to about 3 percent",
+                      "rate fell over the past year"],
+        "expects_refinement": True,
+    }
+    m = metrics.compute_metrics(report, task)
+    assert m.refinement_rounds == 4
+    assert m.refinement_ceiling == 4
+    assert m.refinement_within_ceiling is True
+
+    jr = judge.JudgeResult.from_scores(
+        {
+            "factual_accuracy": {"score": 0.9, "justification": "j"},
+            "citation_accuracy": {"score": 0.9, "justification": "j"},
+            "completeness": {"score": 0.9, "justification": "j"},
+            "source_quality": {"score": 0.9, "justification": "j"},
+            "coherence": {"score": 0.9, "justification": "j"},
+            "overall": {"score": 0.9, "pass": True, "justification": "j"},
+        }
+    )
+    row = run_evals.RunRow(task_id="deep-ok", category="TECHNICAL", status="OK", metrics=m, judge=jr)
+    passed, failures = run_evals.evaluate_quality_bar([row])
+    assert passed, failures
+
+
+def test_depth_override_changes_ceiling() -> None:
+    # A standard task overridden to deep gets the deep cap of 4.
+    tasks = run_evals.load_tasks(tasks_file=None)
+    standard = next(t for t in tasks if t["depth"] == "standard")
+    overridden = run_evals.apply_depth_override([standard], "deep")[0]
+    report = _report_with_n_refinement_rounds(3)
+    m_std = metrics.compute_metrics(report, standard)
+    m_deep = metrics.compute_metrics(report, overridden)
+    assert m_std.refinement_within_ceiling is False  # 3 > standard cap 2
+    assert m_deep.refinement_within_ceiling is True   # 3 <= deep cap 4
+
+
 def test_quality_bar_fails_when_refinement_never_triggers() -> None:
     report = _fixture_report()
     report["refinement_iterations"] = []  # expected but none ran

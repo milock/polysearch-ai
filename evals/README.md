@@ -95,7 +95,12 @@ scoreboard) enforces, across both targets:
 | Placeholder leaks | 0 |
 | Unhandled task crashes | 0 |
 | Refinement triggers on `expects_refinement` tasks | ≥ 80% |
-| Refinement rounds on any task | ≤ 4 (never exceeds the loop ceiling) |
+| Refinement rounds on any task | ≤ that depth's cap (quick 0 / standard 2 / deep 4) |
+
+The refinement ceiling is checked per task against its own depth's
+`max_refinement_iterations` cap from `polysearch.config.DEPTH_PROFILES`, not a flat
+number — a standard-depth run of 3 iterations is a violation even though it is
+under the deep cap. `--depth-override` shifts a task's cap accordingly.
 
 The runner exits non-zero when the gate fails, so it can gate a release in CI or a
 script.

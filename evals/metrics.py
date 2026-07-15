@@ -16,9 +16,28 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
+from polysearch.config import DEPTH_PROFILES
+
 # A key fact counts as covered when its best fuzzy alignment against any window
 # of the report text clears this partial-ratio threshold (0–100).
 KEY_FACT_MATCH_THRESHOLD = 80.0
+
+# Fallback refinement ceiling for an unknown depth: the most permissive profile,
+# so an unrecognized depth never false-flags a ceiling violation.
+_FALLBACK_CEILING = max(p.max_refinement_iterations for p in DEPTH_PROFILES.values())
+
+
+def refinement_ceiling_for_depth(depth: str | None) -> int:
+    """The pipeline's ``max_refinement_iterations`` cap for ``depth``.
+
+    Read from ``polysearch.config.DEPTH_PROFILES`` (quick 0 / standard 2 / deep 4)
+    so the ceiling is per-depth, not a flat constant — a standard-depth run that
+    somehow ran 3 iterations is a real violation the depth's cap of 2 catches.
+    ``--depth-override`` is honored because it mutates the task's depth before the
+    sweep, so the metric sees the depth the run actually used.
+    """
+    profile = DEPTH_PROFILES.get(depth or "")
+    return profile.max_refinement_iterations if profile else _FALLBACK_CEILING
 
 # Same unresolved-template shape the report writer guards against.
 _PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\s*[—-].*?\}\}")
@@ -40,6 +59,8 @@ class RunMetrics:
     refinement_rounds: int
     expects_refinement: bool
     refinement_ok: bool
+    refinement_ceiling: int
+    refinement_within_ceiling: bool
     placeholder_leaks: int
     cost_usd: float
     duration_sec: float
@@ -57,6 +78,8 @@ class RunMetrics:
             "refinement_rounds": self.refinement_rounds,
             "expects_refinement": self.expects_refinement,
             "refinement_ok": self.refinement_ok,
+            "refinement_ceiling": self.refinement_ceiling,
+            "refinement_within_ceiling": self.refinement_within_ceiling,
             "placeholder_leaks": self.placeholder_leaks,
             "cost_usd": round(self.cost_usd, 6),
             "duration_sec": round(self.duration_sec, 3),
@@ -161,6 +184,8 @@ def compute_metrics(
     # not run rounds it should not have (a task not expecting refinement running
     # a bounded round or two is fine — the ceiling is enforced at the gate).
     refinement_ok = (rounds >= 1) if expects else True
+    ceiling = refinement_ceiling_for_depth(task.get("depth"))
+    within_ceiling = rounds <= ceiling
     leaks = _placeholder_leaks(report, text)
 
     totals = report.get("totals") or {}
@@ -177,6 +202,8 @@ def compute_metrics(
         refinement_rounds=rounds,
         expects_refinement=expects,
         refinement_ok=refinement_ok,
+        refinement_ceiling=ceiling,
+        refinement_within_ceiling=within_ceiling,
         placeholder_leaks=leaks,
         cost_usd=cost,
         duration_sec=duration,
