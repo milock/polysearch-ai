@@ -17,13 +17,20 @@ For every task the harness records two kinds of signal.
 
 | Metric | Meaning |
 |--------|---------|
-| Citation verification rate | `verified_ok / total_citations` from the run's verification report |
+| Citation verification rate (gated) | **claim-level** `claims_supported / claims_total` — a report can support most of its claims while individual claim↔URL pairs fail, so the claim rate is what the gate reads |
+| Citation pair rate (secondary) | `verified_ok / total_citations`, ungated — a diagnostic column, not a threshold |
 | Source-tier mix | fraction of unique sources that are HIGH or MEDIUM tier |
 | Dead-link count | citations marked `URL_DEAD` |
-| Key-fact coverage | fraction of the task's `key_facts` found in the report (rapidfuzz partial-ratio ≥ 80) |
+| Key-fact coverage | fraction of the task's `key_facts` found in the report **markdown**, matched sentence-by-sentence with rapidfuzz `token_set_ratio` ≥ 70 so paraphrase is caught but scattered words are not |
 | Refinement rounds | goal-driven refinement iterations that ran follow-up queries, vs. `expects_refinement` |
 | Placeholder leaks | unresolved `{{…}}` template tokens left in the report |
-| Cost / duration | from the report's `totals` |
+| Cost / duration | from the report |
+
+**Two report shapes, one ruler.** The metrics read through `report_adapter.py`,
+which normalizes both the public package schema and the internal pipeline's
+report into one shape. A field that cannot be found in *either* shape becomes
+`None` (marked `n/a` in the scoreboard) with a per-row warning — **never a silent
+zero**. A metric of `0` always means the pipeline genuinely produced zero.
 
 **LLM judge** (`judge.py`, `gpt-5.4-nano`, structured output): factual accuracy,
 citation accuracy, completeness against the task's key facts, source quality, and
@@ -53,7 +60,10 @@ python -m evals.run_evals --target public --rounds-label r2 --depth-override dee
 python -m evals.run_evals --target public --rounds-label r1 --no-judge
 ```
 
-Scoreboards are written to `evals/results/<rounds-label>/<target>/scoreboard.{md,json}`.
+Scoreboards are written to `evals/results/<rounds-label>/<target>/scoreboard.{md,json}`,
+and each task's collected md+json are persisted next to them under
+`results/<rounds-label>/<target>/<task_id>/` (linked from the scoreboard row's
+`report_path`) so a round's reports survive for diagnosis.
 The raw per-task reports under `results/` are gitignored; commit the scoreboards
 per round.
 
@@ -74,6 +84,16 @@ per round.
 same shape. This lets private or vertical task suites run through the same harness
 without ever living in the public repo.
 
+### Timeout
+
+Each target run is bounded by a per-task subprocess timeout, default **2700s**
+(45 min — a deep run under N-way rate-sharing is slow). Override it with the
+`POLYSEARCH_EVAL_TIMEOUT_SEC` environment variable:
+
+```bash
+POLYSEARCH_EVAL_TIMEOUT_SEC=3600 python -m evals.run_evals --target internal --rounds-label r2
+```
+
 ## Cost expectations
 
 Each task is one pipeline run plus one judge call. Pipeline cost dominates and
@@ -90,12 +110,18 @@ scoreboard) enforces, across both targets:
 | Gate | Threshold |
 |------|-----------|
 | Mean judge overall | ≥ 0.80 |
-| Mean citation verification rate | ≥ 0.70 |
+| Mean **claim-level** verification rate (`claims_supported / claims_total`) | ≥ 0.70 |
 | Mean key-fact coverage | ≥ 0.85 |
 | Placeholder leaks | 0 |
 | Unhandled task crashes | 0 |
 | Refinement triggers on `expects_refinement` tasks | ≥ 80% |
 | Refinement rounds on any task | ≤ that depth's cap (quick 0 / standard 2 / deep 4) |
+
+The verification gate reads the **claim-level** rate; the pair-level rate is a
+secondary diagnostic column and is not gated. A metric that is `None` for every
+run (e.g. no verification block anywhere, or coverage with no report text) fails
+the gate rather than passing on empty data — a poisoned round must not slip
+through by having nothing to measure.
 
 The refinement ceiling is checked per task against its own depth's
 `max_refinement_iterations` cap from `polysearch.config.DEPTH_PROFILES`, not a flat
@@ -111,5 +137,6 @@ script.
   TREND, RECENT, CONTESTED).
 - `run_evals.py` — sweep runner, scoreboard, and quality-bar gate.
 - `metrics.py` — programmatic metrics from a report json.
+- `report_adapter.py` — normalizes the public and internal report shapes into one.
 - `judge.py` — LLM-as-judge (rubric, schema, parsing).
-- `results/` — per-round scoreboards (raw reports gitignored).
+- `results/` — per-round scoreboards + persisted per-task reports (raw reports gitignored).
