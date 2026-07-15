@@ -43,6 +43,22 @@ def _isolate_ratelimit_ledger(
     )
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop ``Settings.from_env`` from loading a developer's ``.env`` during tests.
+
+    ``polysearch.config`` calls ``load_dotenv()`` inside ``Settings.from_env``. A
+    developer with a real ``.env`` (a documented, encouraged setup) would have it
+    reloaded mid-test — silently repopulating keys that a test just cleared with
+    ``monkeypatch.delenv`` — making the unit suite pass or fail depending on the
+    machine. Patching the call site to a no-op keeps the suite hermetic: tests see
+    only the process environment they set up, never a ``.env`` on disk.
+    """
+    import polysearch.config as config
+
+    monkeypatch.setattr(config, "load_dotenv", lambda *a, **k: False)
+
+
 @pytest.fixture
 def project_root() -> Path:
     """Path to the polysearch project root (the parent of `tests/`)."""
