@@ -24,6 +24,7 @@ or more improvement rounds affordable.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -215,6 +216,35 @@ def _judge_cost(usage: Any) -> float:
     )
 
 
+# How many times to retry a rate-limited (429) judge call before giving up, and
+# the backoff floor. Large reports (tens of thousands of tokens) routinely bump
+# the model's tokens-per-minute ceiling during a sweep, and that is transient —
+# a plain failure there wastes the whole task's run, so we wait and retry.
+JUDGE_MAX_RETRIES = 5
+_BACKOFF_BASE_SEC = 8.0
+_BACKOFF_CAP_SEC = 60.0
+_RETRY_AFTER_RE = re.compile(r"try again in ([0-9.]+)s")
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    """Whether ``exc`` is an OpenAI rate-limit (429), by type, status, or message."""
+    if type(exc).__name__ == "RateLimitError":
+        return True
+    if getattr(exc, "status_code", None) == 429:
+        return True
+    text = str(exc)
+    return "429" in text or "rate limit" in text.lower()
+
+
+def _retry_delay(exc: Exception, attempt: int) -> float:
+    """Seconds to wait before the next attempt: the server's suggested wait (plus
+    a small buffer) when it gives one, else capped exponential backoff."""
+    hint = _RETRY_AFTER_RE.search(str(exc))
+    if hint:
+        return float(hint.group(1)) + 1.0
+    return min(_BACKOFF_BASE_SEC * (2**attempt), _BACKOFF_CAP_SEC)
+
+
 def judge_report(
     topic: str,
     key_facts: list[str],
@@ -222,13 +252,17 @@ def judge_report(
     *,
     client: Any | None = None,
     api_key: str | None = None,
+    max_retries: int = JUDGE_MAX_RETRIES,
+    sleep_fn: Any = None,
 ) -> JudgeResult:
     """Score one report with the judge model.
 
     ``client`` (an OpenAI-shaped client exposing ``chat.completions.create``) is
     injected in tests; in production it is built from ``api_key`` /
-    ``OPENAI_API_KEY``. Any transport error is caught and surfaced as an ERROR
-    result — the sweep never crashes on a single bad judge call.
+    ``OPENAI_API_KEY``. A rate-limit (429) is retried up to ``max_retries`` times
+    with backoff (honoring the server's suggested wait); any other transport error
+    is surfaced as an ERROR result — the sweep never crashes on a single bad call.
+    ``sleep_fn`` is injected in tests so retries don't actually wait.
     """
     if client is None:
         import os
@@ -236,26 +270,36 @@ def judge_report(
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
+    if sleep_fn is None:
+        import time
+
+        sleep_fn = time.sleep
 
     prompt = build_judge_prompt(topic, key_facts, report_md)
-    try:
-        completion = client.chat.completions.create(
-            model=JUDGE_MODEL,
-            max_completion_tokens=_MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "report_evaluation",
-                    "strict": True,
-                    "schema": JUDGE_SCHEMA,
+    for attempt in range(max_retries + 1):
+        try:
+            completion = client.chat.completions.create(
+                model=JUDGE_MODEL,
+                max_completion_tokens=_MAX_TOKENS,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "report_evaluation",
+                        "strict": True,
+                        "schema": JUDGE_SCHEMA,
+                    },
                 },
-            },
-        )
-    except Exception as exc:  # noqa: BLE001 — one bad judge call must not crash the sweep
-        return JudgeResult(error=f"judge call failed: {exc}")
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad judge call must not crash the sweep
+            if attempt < max_retries and _is_rate_limit(exc):
+                sleep_fn(_retry_delay(exc, attempt))
+                continue
+            return JudgeResult(error=f"judge call failed: {exc}")
 
-    content = completion.choices[0].message.content or ""
-    result = parse_judge_response(content)
-    result.cost_usd = _judge_cost(getattr(completion, "usage", None))
-    return result
+        content = completion.choices[0].message.content or ""
+        result = parse_judge_response(content)
+        result.cost_usd = _judge_cost(getattr(completion, "usage", None))
+        return result
+
+    return JudgeResult(error="judge call failed: retries exhausted")  # pragma: no cover
