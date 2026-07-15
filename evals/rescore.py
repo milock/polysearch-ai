@@ -30,12 +30,12 @@ from evals import metrics as metrics_mod
 from evals.judge import JudgeResult
 from evals.run_evals import (
     RunRow,
-    _default_judge,
     _load_report,
     _match_report_json,
     apply_depth_override,
     evaluate_quality_bar,
     load_tasks,
+    make_default_judge,
     select_tasks,
     write_scoreboard,
 )
@@ -150,6 +150,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip LLM judging (programmatic metrics only).",
     )
+    parser.add_argument(
+        "--judge-full-md",
+        action="store_true",
+        help="Feed the whole report md to the judge (default strips process/audit sections).",
+    )
     return parser
 
 
@@ -160,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     tasks = select_tasks(tasks, ids=args.tasks)
     tasks = apply_depth_override(tasks, args.depth_override)
 
-    judge_fn = None if args.no_judge else _default_judge
+    judge_fn = None if args.no_judge else make_default_judge(args.judge_full_md)
 
     rows = rescore(tasks, artifacts_dir=Path(args.artifacts), judge_fn=judge_fn)
     md_path, _ = write_scoreboard(rows, target=args.target, label=args.label)

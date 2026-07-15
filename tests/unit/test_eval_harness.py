@@ -1057,6 +1057,10 @@ def _client_raising(seq: list) -> object:
     return _Client()
 
 
+class InternalServerError(Exception):
+    """Stands in for openai.InternalServerError (matched by class name)."""
+
+
 def test_judge_retries_on_rate_limit_then_succeeds() -> None:
     slept: list[float] = []
     client = _client_raising([
@@ -1068,7 +1072,15 @@ def test_judge_retries_on_rate_limit_then_succeeds() -> None:
     )
     assert result.error is None
     assert result.passed is True
-    assert slept == [pytest.approx(3.5)]  # 2.5s hint + 1s buffer
+    assert len(slept) == 1 and slept[0] >= 4.0  # one exponential backoff wait
+
+
+def test_judge_retries_on_server_error() -> None:
+    slept: list[float] = []
+    client = _client_raising([InternalServerError("500 oops"), _ok_completion()])
+    result = judge.judge_report("t", ["k"], "md", client=client, sleep_fn=slept.append)
+    assert result.error is None
+    assert len(slept) == 1
 
 
 def test_judge_gives_up_after_max_retries() -> None:
@@ -1092,16 +1104,100 @@ def test_judge_non_rate_limit_error_is_not_retried() -> None:
     assert slept == []  # never retried a non-rate-limit error
 
 
-def test_retry_delay_honors_server_hint_else_backoff() -> None:
-    hinted = judge._retry_delay(Exception("please try again in 4.0s"), 0)
-    assert hinted == pytest.approx(5.0)
-    # No hint -> capped exponential backoff.
-    assert judge._retry_delay(Exception("429"), 0) == pytest.approx(8.0)
-    assert judge._retry_delay(Exception("429"), 10) == pytest.approx(60.0)  # capped
-
-
-def test_is_rate_limit_detection() -> None:
+def test_is_rate_limit_and_server_error_detection() -> None:
     assert judge._is_rate_limit(RateLimitError("x")) is True
     assert judge._is_rate_limit(Exception("Error code: 429")) is True
     assert judge._is_rate_limit(Exception("Rate Limit exceeded")) is True
     assert judge._is_rate_limit(ValueError("bad json")) is False
+    assert judge._is_server_error(InternalServerError("x")) is True
+    assert judge._is_server_error(ValueError("x")) is False
+
+
+def test_judge_spacing_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYSEARCH_EVAL_JUDGE_RPS", raising=False)
+    assert judge.judge_spacing_sec() == pytest.approx(0.5)
+    monkeypatch.setenv("POLYSEARCH_EVAL_JUDGE_RPS", "4")
+    assert judge.judge_spacing_sec() == pytest.approx(0.25)
+    monkeypatch.setenv("POLYSEARCH_EVAL_JUDGE_RPS", "garbage")
+    assert judge.judge_spacing_sec() == pytest.approx(0.5)
+
+
+# ---- Process-section stripping (end-state judging) ------------------------ #
+def _report_md_with_audit() -> str:
+    return (
+        "# Research: monetary policy\n\n"
+        "Generated: 2026-07-15 | Depth: deep | Cost: $1.06\n\n"
+        "## Executive Summary\n\n"
+        "The federal funds rate is near 4.25 percent and fell over the year.\n\n"
+        "## Key Findings\n\n"
+        "- Inflation cooled to about 3 percent.\n\n"
+        "## Pipeline Decisions\n\n"
+        "- Topic type: THEMATIC\n\n"
+        "## Sources by Quality Tier\n\n"
+        "### High (primary) (2)\n"
+        "- [BLS](https://bls.gov/a)\n"
+        "### Excluded (dead links) (1 URL_DEAD)\n"
+        "- https://dead.example/z\n\n"
+        "## Citation Integrity\n\n"
+        "0/84 fully match. Pervasive NUMBER_MISMATCH detected across citations.\n"
+        "### Failed citations (details)\n"
+        "- claim c1: NUMBER_MISMATCH\n\n"
+        "## Refinement Trace\n\n"
+        "Iteration 1 — coverage 0.34\n\n"
+        "## Pipeline Stats\n\n"
+        "- Total: $1.06 · 7m 49s\n"
+    )
+
+
+def test_strip_process_sections_removes_audit_keeps_content() -> None:
+    stripped = judge.strip_process_sections(_report_md_with_audit())
+    # Kept: synthesis body + sources-by-tier bucket.
+    assert "Executive Summary" in stripped
+    assert "federal funds rate is near 4.25 percent" in stripped
+    assert "Sources by Quality Tier" in stripped
+    assert "bls.gov/a" in stripped
+    # Dropped: every process/audit section and the poisoning audit strings.
+    assert "Pipeline Decisions" not in stripped
+    assert "Pipeline Stats" not in stripped
+    assert "Refinement Trace" not in stripped
+    assert "Citation Integrity" not in stripped
+    assert "NUMBER_MISMATCH" not in stripped
+    assert "0/84 fully match" not in stripped
+    assert "Failed citations" not in stripped
+    # The Excluded subsection under a kept H2 is dropped too.
+    assert "Excluded (dead links)" not in stripped
+    assert "dead.example" not in stripped
+
+
+def test_build_judge_prompt_strips_audit_by_default() -> None:
+    prompt = judge.build_judge_prompt("t", ["k"], _report_md_with_audit())
+    assert "Executive Summary" in prompt
+    assert "NUMBER_MISMATCH" not in prompt
+    assert "Citation Integrity" not in prompt
+
+
+def test_build_judge_prompt_full_md_keeps_everything() -> None:
+    prompt = judge.build_judge_prompt("t", ["k"], _report_md_with_audit(), full_md=True)
+    assert "NUMBER_MISMATCH" in prompt  # escape hatch: nothing stripped
+    assert "Pipeline Stats" in prompt
+
+
+def test_judge_report_full_md_passthrough() -> None:
+    seen: dict = {}
+
+    class _Completions:
+        def create(self, **kwargs):
+            seen["prompt"] = kwargs["messages"][0]["content"]
+            return _ok_completion()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    judge.judge_report("t", ["k"], _report_md_with_audit(), client=_Client(), full_md=True)
+    assert "NUMBER_MISMATCH" in seen["prompt"]
+
+    judge.judge_report("t", ["k"], _report_md_with_audit(), client=_Client(), full_md=False)
+    assert "NUMBER_MISMATCH" not in seen["prompt"]
