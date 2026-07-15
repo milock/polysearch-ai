@@ -1001,3 +1001,107 @@ def test_rescore_main_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     data = json.loads(board.read_text())
     assert data["rows"][0]["task_id"] == "one"
     assert data["rows"][0]["status"] == "OK"
+
+
+# =========================================================================== #
+# Judge rate-limit (429) retry/backoff
+# =========================================================================== #
+class RateLimitError(Exception):
+    """Stands in for openai.RateLimitError (matched by class name)."""
+
+
+def _ok_completion():
+    payload = {
+        "factual_accuracy": {"score": 0.9, "justification": "x"},
+        "citation_accuracy": {"score": 0.9, "justification": "x"},
+        "completeness": {"score": 0.9, "justification": "x"},
+        "source_quality": {"score": 0.9, "justification": "x"},
+        "coherence": {"score": 0.9, "justification": "x"},
+        "overall": {"score": 0.9, "pass": True, "justification": "x"},
+    }
+
+    class _Msg:
+        content = json.dumps(payload)
+
+    class _Choice:
+        message = _Msg()
+
+    class _Usage:
+        prompt_tokens = 1000
+        completion_tokens = 100
+
+    class _Completion:
+        choices = [_Choice()]
+        usage = _Usage()
+
+    return _Completion()
+
+
+def _client_raising(seq: list) -> object:
+    """A client whose create() pops from ``seq``: an Exception is raised, anything
+    else is returned as the completion."""
+
+    class _Completions:
+        def create(self, **kwargs):
+            item = seq.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    return _Client()
+
+
+def test_judge_retries_on_rate_limit_then_succeeds() -> None:
+    slept: list[float] = []
+    client = _client_raising([
+        RateLimitError("Rate limit reached... try again in 2.5s"),
+        _ok_completion(),
+    ])
+    result = judge.judge_report(
+        "t", ["k"], "md", client=client, sleep_fn=slept.append
+    )
+    assert result.error is None
+    assert result.passed is True
+    assert slept == [pytest.approx(3.5)]  # 2.5s hint + 1s buffer
+
+
+def test_judge_gives_up_after_max_retries() -> None:
+    slept: list[float] = []
+    client = _client_raising([RateLimitError("429 rate limit")] * 10)
+    result = judge.judge_report(
+        "t", ["k"], "md", client=client, max_retries=3, sleep_fn=slept.append
+    )
+    assert result.error is not None
+    assert "429" in result.error or "rate limit" in result.error.lower()
+    assert len(slept) == 3  # retried exactly max_retries times before giving up
+
+
+def test_judge_non_rate_limit_error_is_not_retried() -> None:
+    slept: list[float] = []
+    client = _client_raising([ValueError("bad request")])
+    result = judge.judge_report(
+        "t", ["k"], "md", client=client, max_retries=3, sleep_fn=slept.append
+    )
+    assert result.error is not None
+    assert slept == []  # never retried a non-rate-limit error
+
+
+def test_retry_delay_honors_server_hint_else_backoff() -> None:
+    hinted = judge._retry_delay(Exception("please try again in 4.0s"), 0)
+    assert hinted == pytest.approx(5.0)
+    # No hint -> capped exponential backoff.
+    assert judge._retry_delay(Exception("429"), 0) == pytest.approx(8.0)
+    assert judge._retry_delay(Exception("429"), 10) == pytest.approx(60.0)  # capped
+
+
+def test_is_rate_limit_detection() -> None:
+    assert judge._is_rate_limit(RateLimitError("x")) is True
+    assert judge._is_rate_limit(Exception("Error code: 429")) is True
+    assert judge._is_rate_limit(Exception("Rate Limit exceeded")) is True
+    assert judge._is_rate_limit(ValueError("bad json")) is False
