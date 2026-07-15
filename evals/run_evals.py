@@ -54,9 +54,10 @@ MIN_KEY_FACT_COVERAGE = 0.85
 MAX_PLACEHOLDER_LEAKS = 0
 MAX_CRASHES = 0
 MIN_REFINEMENT_TRIGGER_RATE = 0.80
-# No task's refinement loop may run more rounds than this (matches the pipeline's
-# deep-profile iteration cap; a run exceeding it signals a broken stop condition).
-REFINEMENT_CEILING = 4
+# The refinement ceiling is not a flat constant — each run is checked against its
+# own depth's max_refinement_iterations cap (quick 0 / standard 2 / deep 4), read
+# from polysearch.config.DEPTH_PROFILES by evals.metrics. A run exceeding its cap
+# signals a broken stop condition.
 
 DEFAULT_TASKS_FILE = Path(__file__).resolve().parent / "tasks.yaml"
 RESULTS_ROOT = Path(__file__).resolve().parent / "results"
@@ -317,12 +318,13 @@ def evaluate_quality_bar(rows: list[RunRow]) -> tuple[bool, list[str]]:
                 f"(< {MIN_REFINEMENT_TRIGGER_RATE:.0%})"
             )
 
-    over_ceiling = [r for r in ok if r.metrics.refinement_rounds > REFINEMENT_CEILING]
+    over_ceiling = [r for r in ok if not r.metrics.refinement_within_ceiling]
     if over_ceiling:
-        ids = ", ".join(r.task_id for r in over_ceiling)
-        failures.append(
-            f"refinement exceeded ceiling {REFINEMENT_CEILING} on: {ids}"
+        ids = ", ".join(
+            f"{r.task_id} ({r.metrics.refinement_rounds} > {r.metrics.refinement_ceiling})"
+            for r in over_ceiling
         )
+        failures.append(f"refinement exceeded per-depth ceiling on: {ids}")
 
     return (not failures), failures
 
