@@ -84,6 +84,25 @@ per round.
 same shape. This lets private or vertical task suites run through the same harness
 without ever living in the public repo.
 
+### Rescoring existing artifacts
+
+`rescore.py` re-scores reports that already exist on disk — no target is re-run.
+Use it to apply improved metrics/judging to a past round, or to score reports a
+sweep produced out-of-band:
+
+```bash
+python -m evals.rescore --target internal --artifacts DIR --label r1-rescored
+python -m evals.rescore --target internal --artifacts DIR --label r1-lm \
+    --tasks-file /path/to/internal-tasks.yaml
+python -m evals.rescore --target public --artifacts DIR --label r1-rescored --no-judge
+```
+
+It finds each task's report in `--artifacts DIR` by topic slug (supporting both
+flat `md`+`json` pairs and per-task subdirectories), recomputes metrics through
+the same adapter, optionally re-judges, and writes a scoreboard with the same
+builders as the live sweep. A task with no matching artifact is `SKIPPED` (not an
+error) — it simply was not part of the round being rescored.
+
 ### Timeout
 
 Each target run is bounded by a per-task subprocess timeout, default **2700s**

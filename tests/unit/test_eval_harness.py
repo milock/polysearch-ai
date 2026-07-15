@@ -845,3 +845,159 @@ def test_collect_report_prefers_slug_match(tmp_path: Path) -> None:
     report, md, md_path = run_evals._collect_report(tmp_path, "my special topic")
     assert report["topic"] == "my special topic"
     assert md == "mine"
+
+
+# =========================================================================== #
+# Score-only rescore mode (evals/rescore.py)
+# =========================================================================== #
+from evals import rescore as rescore_mod  # noqa: E402
+
+
+def _passing_judge(topic: str, key_facts: list[str], report_md: str) -> judge.JudgeResult:
+    return judge.JudgeResult.from_scores(
+        {
+            "factual_accuracy": {"score": 0.9, "justification": "j"},
+            "citation_accuracy": {"score": 0.9, "justification": "j"},
+            "completeness": {"score": 0.9, "justification": "j"},
+            "source_quality": {"score": 0.9, "justification": "j"},
+            "coherence": {"score": 0.9, "justification": "j"},
+            "overall": {"score": 0.9, "pass": True, "justification": "j"},
+        }
+    )
+
+
+def _write_pair(dir_: Path, topic: str, report: dict, md: str) -> None:
+    dir_.mkdir(parents=True, exist_ok=True)
+    stem = f"2026-07-15-{run_evals.slugify(topic)}"
+    (dir_ / f"{stem}.json").write_text(json.dumps(report), encoding="utf-8")
+    (dir_ / f"{stem}.md").write_text(md, encoding="utf-8")
+
+
+def _rescore_task(topic: str, task_id: str = "t") -> dict:
+    return {
+        "id": task_id, "topic": topic, "depth": "standard", "category": "FACTUAL",
+        "key_facts": ["federal funds rate near 4.25 percent",
+                      "inflation cooled to about 3 percent",
+                      "rate fell over the past year"],
+        "expects_refinement": False,
+    }
+
+
+def test_rescore_flat_pairs(tmp_path: Path) -> None:
+    topic = "example generic topic"
+    md = _fixture_report()["synthesis_md"]
+    _write_pair(tmp_path, topic, _fixture_report(), md)
+    rows = rescore_mod.rescore(
+        [_rescore_task(topic, "factual-rates")], artifacts_dir=tmp_path, judge_fn=_passing_judge
+    )
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.status == "OK"
+    assert r.metrics is not None
+    assert r.judge is not None and r.judge.passed is True
+    assert r.report_path and r.report_path.endswith(".md")
+
+
+def test_rescore_per_task_subdir(tmp_path: Path) -> None:
+    topic = "example generic topic"
+    subdir = tmp_path / "factual-rates"
+    _write_pair(subdir, topic, _fixture_report(), _fixture_report()["synthesis_md"])
+    rows = rescore_mod.rescore(
+        [_rescore_task(topic, "factual-rates")], artifacts_dir=tmp_path, judge_fn=_passing_judge
+    )
+    assert rows[0].status == "OK"
+    assert rows[0].metrics is not None
+
+
+def test_rescore_missing_artifact_is_skipped_not_error(tmp_path: Path) -> None:
+    # No artifact written for this topic.
+    rows = rescore_mod.rescore(
+        [_rescore_task("a topic with no report", "ghost")],
+        artifacts_dir=tmp_path,
+        judge_fn=_passing_judge,
+    )
+    assert rows[0].status == "SKIPPED"
+    assert rows[0].metrics is None
+    assert "no artifact" in (rows[0].error or "")
+
+
+def test_rescore_no_judge_skips_judging(tmp_path: Path) -> None:
+    topic = "example generic topic"
+    _write_pair(tmp_path, topic, _fixture_report(), _fixture_report()["synthesis_md"])
+    rows = rescore_mod.rescore(
+        [_rescore_task(topic)], artifacts_dir=tmp_path, judge_fn=None
+    )
+    assert rows[0].status == "OK"
+    assert rows[0].judge is None
+    assert rows[0].metrics is not None
+
+
+def test_rescore_slug_match_picks_right_report(tmp_path: Path) -> None:
+    # Two reports in one flat dir; rescore must pick the one for the task's topic.
+    _write_pair(tmp_path, "the first distinct topic",
+                {**_fixture_report(), "topic": "the first distinct topic"},
+                "first topic body")
+    _write_pair(tmp_path, "a second unrelated subject",
+                {**_fixture_report(), "topic": "a second unrelated subject"},
+                "second topic body")
+    rows = rescore_mod.rescore(
+        [_rescore_task("a second unrelated subject", "s2")],
+        artifacts_dir=tmp_path, judge_fn=None,
+    )
+    assert rows[0].status == "OK"
+    # It matched the right file (its md is what coverage/judge would see).
+    report, md, _ = run_evals._load_report(
+        rescore_mod._match_report_json(rescore_mod.find_artifact_jsons(tmp_path),
+                                       "a second unrelated subject")
+    )
+    assert report["topic"] == "a second unrelated subject"
+    assert md == "second topic body"
+
+
+def test_find_artifact_jsons_both_layouts(tmp_path: Path) -> None:
+    (tmp_path / "2026-07-15-flat.json").write_text("{}", encoding="utf-8")
+    sub = tmp_path / "task-a"
+    sub.mkdir()
+    (sub / "2026-07-15-nested.json").write_text("{}", encoding="utf-8")
+    found = {p.name for p in rescore_mod.find_artifact_jsons(tmp_path)}
+    assert found == {"2026-07-15-flat.json", "2026-07-15-nested.json"}
+
+
+def test_rescore_writes_scoreboard_with_skipped(tmp_path: Path) -> None:
+    topic = "example generic topic"
+    _write_pair(tmp_path, topic, _fixture_report(), _fixture_report()["synthesis_md"])
+    tasks = [_rescore_task(topic, "have-it"), _rescore_task("missing topic", "missing")]
+    rows = rescore_mod.rescore(tasks, artifacts_dir=tmp_path, judge_fn=_passing_judge)
+    # Scoreboard renders without crashing and counts the skip.
+    md = run_evals.render_scoreboard_md(rows, target="internal", label="r1-rescored")
+    assert "have-it" in md and "missing" in md
+    assert "SKIPPED" in md
+    payload = run_evals.build_scoreboard_json(rows, target="internal", label="r1-rescored")
+    assert payload["summary"]["skipped"] == 1
+    assert payload["summary"]["ok"] == 1
+
+
+def test_rescore_main_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    topic = "example generic topic"
+    _write_pair(tmp_path, topic, _fixture_report(), _fixture_report()["synthesis_md"])
+    tasks_file = tmp_path / "tasks.yaml"
+    tasks_file.write_text(
+        "tasks:\n"
+        f"  - id: one\n    topic: {topic}\n    depth: standard\n    category: FACTUAL\n"
+        "    key_facts: [alpha, beta, gamma]\n    expects_refinement: false\n",
+        encoding="utf-8",
+    )
+    results_root = tmp_path / "results"
+    monkeypatch.setattr(run_evals, "RESULTS_ROOT", results_root)
+    rc = rescore_mod.main(
+        [
+            "--target", "internal", "--artifacts", str(tmp_path),
+            "--label", "rX", "--tasks-file", str(tasks_file), "--no-judge",
+        ]
+    )
+    assert rc in (0, 1)  # exit code reflects the gate, either is a clean run
+    board = results_root / "rX" / "internal" / "scoreboard.json"
+    assert board.exists()
+    data = json.loads(board.read_text())
+    assert data["rows"][0]["task_id"] == "one"
+    assert data["rows"][0]["status"] == "OK"
