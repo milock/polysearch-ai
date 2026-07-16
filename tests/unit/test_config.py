@@ -71,6 +71,7 @@ def test_defaults() -> None:
     assert s.synthesis_model == "gpt-5.4-mini"
     assert s.synthesis_price_in == 0.75
     assert s.synthesis_price_out == 4.50
+    assert s.synthesis_excerpt_chars == 1200
     assert s.perplexity_model == "sonar-pro"
     assert s.perplexity_deep_model == "sonar-reasoning-pro"
     # Default sonar-pro per-1M-token pricing.
@@ -105,6 +106,12 @@ def test_synthesis_model_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYSEARCH_SYNTHESIS_MODEL", "gpt-6-nano")
     s = Settings.from_env()
     assert s.synthesis_model == "gpt-6-nano"
+
+
+def test_synthesis_excerpt_chars_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYSEARCH_SYNTHESIS_EXCERPT_CHARS", "800")
+    s = Settings.from_env()
+    assert s.synthesis_excerpt_chars == 800
 
 
 def test_perplexity_pricing_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

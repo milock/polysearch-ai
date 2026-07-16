@@ -41,19 +41,31 @@ _ANTHROPIC_PRICE_OUT = 15.0
 
 _MAX_TOKENS = 4000
 
+# Per-source excerpt budgets (chars). Authoritative sources (HIGH/MEDIUM) carry
+# the figures a good report must state, so they get the wider excerpt; lower tiers
+# stay at the base. The HIGH/MEDIUM budget is caller-overridable
+# (``Settings.synthesis_excerpt_chars``); the base is fixed.
+_BASE_EXCERPT_CHARS = 600
+_DEFAULT_HI_EXCERPT_CHARS = 1200
+_WIDE_EXCERPT_TIERS = frozenset({"HIGH", "MEDIUM"})
+
 
 def build_synthesis_prompt(
     topic: str,
     layers: list[LayerOutput],
     *,
     style_constraints: str | None = None,
+    excerpt_chars: int | None = None,
 ) -> str:
     """Build the synthesis user prompt from ``topic`` + layer material.
 
-    Each source is rendered tier-labeled with its published date and snippet
-    (``snippet or markdown[:600]``), grouped under its layer.
+    Each source is rendered tier-labeled with its published date and snippet,
+    grouped under its layer. HIGH/MEDIUM-tier sources get a wider excerpt
+    (``excerpt_chars``, default 1200) than lower tiers (600), since the
+    authoritative pages carry the concrete figures Key Findings must state.
     ``style_constraints`` is appended verbatim when set.
     """
+    hi_chars = excerpt_chars if excerpt_chars is not None else _DEFAULT_HI_EXCERPT_CHARS
     parts = [
         f"Research topic: {topic}",
         "",
@@ -62,11 +74,19 @@ def build_synthesis_prompt(
         "",
         "## Executive Summary",
         "2-4 sentences on the single most important thing someone preparing for a "
-        "decision should know.",
+        "decision should know. Lead with the concrete answer — the specific "
+        "figure, date, name, or range the topic asks for — not a general "
+        "characterization of it.",
         "",
         "## Key Findings",
-        "3-7 bullet points. End each with a source tag like [HIGH: domain, date], "
-        "[COMMUNITY], or [SME].",
+        "3-7 bullet points. Each bullet must state a concrete fact: the actual "
+        "number, date, name, range, or measured value, with its unit — not an "
+        "allusion to it. State the specific figure the finding rests on (prefer "
+        "\"held at 3.50%-3.75% as of June 2026\" over \"rates held steady\"). When "
+        "the topic asks for a specific quantity, entity, count, or date, state it "
+        "explicitly with its value and cite the source whose figure you used. End "
+        "each bullet with a source tag like [HIGH: domain, date], [COMMUNITY], or "
+        "[SME].",
         "",
         "## Source Quality Notes",
         "2-5 bullets on conflicts, gaps, or source-tier concentration risks. Be "
@@ -74,6 +94,9 @@ def build_synthesis_prompt(
         "",
         "Ground every claim in the material below. Do not introduce facts not "
         "present in the input.",
+        "Keep the report internally consistent: any figure, count, or date you "
+        "state in prose must match the figures and counts in your own bullets and "
+        "lists (if you say \"three cuts,\" list three).",
         "Write in plain, direct prose.",
     ]
     if style_constraints:
@@ -86,7 +109,8 @@ def build_synthesis_prompt(
         parts.append(f"\n## Layer: {layer.layer} ({len(layer.results)} sources)")
         for src in layer.results:
             date = src.published_date or "undated"
-            snippet = (src.snippet or "")[:600]
+            budget = hi_chars if src.tier in _WIDE_EXCERPT_TIERS else _BASE_EXCERPT_CHARS
+            snippet = (src.snippet or "")[:budget]
             parts.append(
                 f"- [{src.tier} | {date}] {src.title} ({src.url}) — {snippet}"
             )
@@ -111,7 +135,10 @@ class OpenAISynthesizer:
         style_constraints: str | None,
     ) -> tuple[str, float]:
         prompt = build_synthesis_prompt(
-            topic, layers, style_constraints=style_constraints
+            topic,
+            layers,
+            style_constraints=style_constraints,
+            excerpt_chars=self.settings.synthesis_excerpt_chars,
         )
         client = AsyncOpenAI(api_key=self.settings.openai_api_key)
         msg = await client.chat.completions.create(
@@ -147,7 +174,10 @@ class AnthropicSynthesizer:
         style_constraints: str | None,
     ) -> tuple[str, float]:
         prompt = build_synthesis_prompt(
-            topic, layers, style_constraints=style_constraints
+            topic,
+            layers,
+            style_constraints=style_constraints,
+            excerpt_chars=self.settings.synthesis_excerpt_chars,
         )
         client = AsyncAnthropic(api_key=self.settings.anthropic_api_key)
         msg = await client.messages.create(

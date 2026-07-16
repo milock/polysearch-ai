@@ -79,6 +79,10 @@ class Settings:
     synthesis_model: str = "gpt-5.4-mini"
     synthesis_price_in: float = 0.75
     synthesis_price_out: float = 4.50
+    # Per-source excerpt budget (chars) fed to synthesis for HIGH/MEDIUM-tier
+    # sources. Authoritative pages carry the figures a good report must state, so
+    # they get a wider excerpt than lower tiers (which stay at the 600-char base).
+    synthesis_excerpt_chars: int = 1200
 
     # ── Discovery / search ───────────────────────────────────────────────
     perplexity_model: str = "sonar-pro"
@@ -131,6 +135,7 @@ class Settings:
             synthesis_model=_get_str("POLYSEARCH_SYNTHESIS_MODEL", "gpt-5.4-mini"),
             synthesis_price_in=_get_float("POLYSEARCH_SYNTHESIS_PRICE_IN", 0.75),
             synthesis_price_out=_get_float("POLYSEARCH_SYNTHESIS_PRICE_OUT", 4.50),
+            synthesis_excerpt_chars=_get_int("POLYSEARCH_SYNTHESIS_EXCERPT_CHARS", 1200),
             perplexity_model=_get_str("POLYSEARCH_PERPLEXITY_MODEL", "sonar-pro"),
             perplexity_deep_model=_get_str(
                 "POLYSEARCH_PERPLEXITY_DEEP_MODEL", "sonar-reasoning-pro"
