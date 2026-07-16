@@ -324,6 +324,12 @@ async def run_research(
 
     # ── Claim extraction: synthesis + research answers + authoritative facts ──
     all_urls = [s.url for lyr in layers for s in lyr.results if s.url]
+    # (url, snippet) pairs so extract_claims can attribute each claim to the
+    # sources whose snippet actually relates to it, instead of the whole corpus —
+    # tightens verification pairing and drops off-topic pages from a claim's cites.
+    all_sources = [
+        (s.url, s.snippet or "") for lyr in layers for s in lyr.results if s.url
+    ]
     claims: list[Claim] = []
     seen_claim_ids: set[str] = set()
 
@@ -337,13 +343,17 @@ async def run_research(
         return added
 
     if synthesis_md.strip():
-        _add_claims(extract_claims(synthesis_md, all_urls))
+        _add_claims(extract_claims(synthesis_md, all_urls, sources=all_sources))
     for lyr in (research_layer, deep_layer):
         if lyr is None:
             continue
-        lyr_urls = [s.url for s in lyr.results if s.url] or all_urls
+        lyr_sources = [(s.url, s.snippet or "") for s in lyr.results if s.url]
+        lyr_urls = [u for (u, _s) in lyr_sources] or all_urls
+        # A layer's own sources localize its answer claims; fall back to the
+        # corpus when the layer surfaced no sources of its own.
+        answer_sources = lyr_sources or all_sources
         for answer in lyr.answers:
-            _add_claims(extract_claims(answer, lyr_urls))
+            _add_claims(extract_claims(answer, lyr_urls, sources=answer_sources))
     # Authoritative facts become claim-bearing text so they get verified like
     # everything else — value + surrounding context carry the figure to check.
     for fact in authoritative_facts:

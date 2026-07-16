@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Sequence
 
 from polysearch.output.schema import Claim
 
@@ -36,6 +37,74 @@ _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
 
 # Sentences shorter than this are filler (headers, list stubs) — skip them.
 _MIN_SENTENCE_LEN = 30
+
+# ── Per-claim source localization ────────────────────────────────────────────
+# Content-word tokens (>=3 chars) used to score how well a source snippet relates
+# to a claim sentence. A tiny stopword list keeps generic connective words from
+# inflating overlap; the goal is topical, not linguistic, matching.
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_STOPWORDS = frozenset(
+    """the and for that with from this these those over past year years into than
+    was were has have had are its their they them then such about which while when
+    also been being more most some many much other another across around between
+    per via not but out only just very both each any all one two per""".split()
+)
+# A claim is attributed to a source when their content-word overlap (as a fraction
+# of the claim's tokens) clears this bar, or when the source snippet literally
+# contains one of the claim's figures. Tuned so a clearly on-topic snippet passes
+# and an off-topic one does not; below it, the claim falls back to corpus-wide.
+_MIN_OVERLAP = 0.30
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {
+        t
+        for t in _TOKEN_RE.findall(text.lower())
+        if len(t) >= 3 and t not in _STOPWORDS
+    }
+
+
+def _number_core(number: str) -> str:
+    """The bare numeric core of a figure ('$3.63%' -> '3.63'), for substring
+    presence checks against a snippet."""
+    m = re.search(r"\d[\d,]*(?:\.\d+)?", number)
+    return m.group(0).replace(",", "") if m else ""
+
+
+def _localize_source_urls(
+    sentence: str,
+    numbers: list[str],
+    sources: Sequence[tuple[str, str]],
+    fallback: list[str],
+) -> list[str]:
+    """Attribute a claim to the sources whose snippet plausibly supports it.
+
+    Scores each ``(url, snippet)`` by content-word overlap with the claim
+    sentence and by literal presence of the claim's figures; returns the URLs
+    that clear the bar (order-preserving, deduped). Falls back to ``fallback``
+    (the corpus-wide URL list) when nothing relates, so a claim is never left
+    without a source to verify against.
+    """
+    claim_tokens = _content_tokens(sentence)
+    number_cores = [c for c in (_number_core(n) for n in numbers) if c]
+    related: list[str] = []
+    seen: set[str] = set()
+    for url, snippet in sources:
+        if not url or url in seen:
+            continue
+        snip = (snippet or "").strip()
+        if not snip:
+            continue
+        snip_low = snip.lower()
+        num_hit = any(core in snip_low for core in number_cores)
+        if claim_tokens:
+            overlap = len(claim_tokens & _content_tokens(snip)) / len(claim_tokens)
+        else:
+            overlap = 0.0
+        if num_hit or overlap >= _MIN_OVERLAP:
+            related.append(url)
+            seen.add(url)
+    return related or fallback
 
 
 def _claim_id(text: str) -> str:
@@ -94,17 +163,34 @@ def _split_sentences(text: str) -> list[str]:
     return [s.strip() for s in _SENTENCE_RE.split(text) if s.strip()]
 
 
-def extract_claims(text: str, source_urls: list[str]) -> list[Claim]:
-    """Extract verifiable Claims from ``text``, attributing each to ``source_urls``.
+def extract_claims(
+    text: str,
+    source_urls: list[str],
+    *,
+    sources: Sequence[tuple[str, str]] | None = None,
+) -> list[Claim]:
+    """Extract verifiable Claims from ``text``, attributing each to its sources.
 
     Every sentence long enough to carry substance and containing a direct quote
-    or a numeric assertion becomes one Claim; the run's ``source_urls`` are
-    attached so the verifier knows which cited pages to check. Returns an empty
-    list when the text is empty or no source URLs are available.
+    or a numeric assertion becomes one Claim. Attribution:
+
+    - Without ``sources``, the run's whole ``source_urls`` list is attached to
+      every claim (legacy behavior) — the verifier checks each claim against the
+      full corpus.
+    - With ``sources`` (``(url, snippet)`` pairs), each claim is attributed only
+      to the sources whose snippet plausibly relates to that sentence (content
+      overlap or a literal figure match), falling back to the corpus-wide
+      ``source_urls`` when nothing relates. This tightens verification pairing so
+      a claim is scored against the pages that could actually support it, not
+      every page in the run.
+
+    Returns an empty list when the text is empty or no source URLs are available.
     """
     urls = [u for u in source_urls if u]
     if not text or not urls:
         return []
+
+    localizable = [(u, s) for (u, s) in (sources or []) if u]
 
     claims: list[Claim] = []
     for sentence in _split_sentences(text):
@@ -116,13 +202,18 @@ def extract_claims(text: str, source_urls: list[str]) -> list[Claim]:
         # is unverifiable.
         if not quotes and not numbers:
             continue
+        claim_urls = (
+            _localize_source_urls(sentence, numbers, localizable, urls)
+            if localizable
+            else urls
+        )
         claims.append(
             Claim(
                 claim_id=_claim_id(sentence),
                 text=sentence,
                 numbers=numbers,
                 quotes=quotes,
-                source_urls=urls,
+                source_urls=claim_urls,
             )
         )
     return claims

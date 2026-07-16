@@ -109,3 +109,60 @@ def test_multiple_sentences_yield_multiple_claims():
     assert len(claims) == 2
     assert claims[0].numbers == ["42%"]
     assert claims[1].quotes == ["a genuine inflection point"]
+
+
+# ── Per-claim source localization (P2: tighten verification pairing) ──────────
+
+
+def test_localizes_claim_to_topically_related_source():
+    """When ``sources`` (url, snippet) are supplied, a claim is attributed only to
+    sources whose snippet plausibly relates to the claim sentence — not the whole
+    corpus."""
+    text = "The federal funds target range held at 3.50% to 3.75% in June 2026."
+    sources = [
+        (
+            "https://federalreserve.gov/fomc",
+            "The FOMC kept the federal funds target range at 3.50 to 3.75 percent.",
+        ),
+        (
+            "https://fda.gov/devices",
+            "AI-enabled medical devices guidance for premarket submissions.",
+        ),
+    ]
+    claims = extract_claims(text, URLS, sources=sources)
+    assert len(claims) == 1
+    # Only the topically-overlapping Fed page is attributed; the off-topic FDA
+    # page is dropped even though it is in the corpus.
+    assert claims[0].source_urls == ["https://federalreserve.gov/fomc"]
+
+
+def test_number_in_snippet_localizes_source():
+    """A source whose snippet contains the claim's figure is attributed even when
+    prose token overlap is thin."""
+    text = "Effective rates fell to 3.63% by mid-2026 from a year earlier."
+    sources = [
+        ("https://fred.example/series", "Monthly series value printed 3.63 for the period."),
+        ("https://unrelated.example/x", "Completely different subject matter about gardening."),
+    ]
+    claims = extract_claims(text, URLS, sources=sources)
+    assert claims[0].source_urls == ["https://fred.example/series"]
+
+
+def test_falls_back_to_all_urls_when_no_source_relates():
+    """No related source -> the claim keeps the corpus-wide URL list so it is
+    never left un-verifiable."""
+    text = "Adoption climbed 42% across the quarter, a record for the category."
+    sources = [
+        ("https://a.example/x", "An article about unrelated maritime shipping tariffs."),
+        ("https://b.example/y", "Notes on medieval architecture and cathedrals."),
+    ]
+    claims = extract_claims(text, URLS, sources=sources)
+    assert claims[0].source_urls == URLS
+
+
+def test_no_sources_param_attaches_all_urls():
+    """Backward-compatible: without ``sources``, every claim gets the full URL
+    list, exactly as before."""
+    text = "The vendor reported that adoption climbed 42% across the quarter."
+    claims = extract_claims(text, URLS)
+    assert claims[0].source_urls == URLS
