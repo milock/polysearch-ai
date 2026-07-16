@@ -36,6 +36,8 @@ _ENV_VARS = [
     "POLYSEARCH_DEEP_RESEARCH",
     "POLYSEARCH_FUZZY_THRESHOLD",
     "POLYSEARCH_ENABLE_DEEP_RESEARCH",
+    "POLYSEARCH_TIME_BUDGET_S",
+    "POLYSEARCH_COMMUNITY_ADAPTER_TIMEOUT_S",
 ]
 
 
@@ -90,6 +92,20 @@ def test_defaults() -> None:
     assert s.refinement_cost_ceiling_usd is None
     assert s.style_constraints is None
     assert s.allow_placeholders is False
+    assert s.time_budget_s is None
+    assert s.community_adapter_timeout_s == 60.0
+
+
+def test_time_budget_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYSEARCH_TIME_BUDGET_S", "2580")
+    s = Settings.from_env()
+    assert s.time_budget_s == 2580.0
+
+
+def test_community_adapter_timeout_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYSEARCH_COMMUNITY_ADAPTER_TIMEOUT_S", "30")
+    s = Settings.from_env()
+    assert s.community_adapter_timeout_s == 30.0
 
 
 def test_api_keys_read_conventional_names(monkeypatch: pytest.MonkeyPatch) -> None:

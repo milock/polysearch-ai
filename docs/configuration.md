@@ -68,7 +68,14 @@ All optional. A missing key swaps the layer that needs it for a null provider; t
 |---|---|---|---|
 | `POLYSEARCH_DEEP_RESEARCH` | `enable_deep_research` | `false` | Enables the deep-research layer. `--depth deep` and `--deep-research` also turn it on for a run. |
 | `POLYSEARCH_DEEP_RESEARCH_MODEL` | `deep_research_model` | `sonar-deep-research` | The Perplexity deep-research model. |
-| `POLYSEARCH_DEEP_RESEARCH_TIMEOUT_S` | `deep_research_timeout_s` | `3600` | Timeout in seconds for a deep-research call. |
+| `POLYSEARCH_DEEP_RESEARCH_TIMEOUT_S` | `deep_research_timeout_s` | `3600` | Timeout in seconds for a deep-research call. Further clamped down to whatever remains of `POLYSEARCH_TIME_BUDGET_S` when that's set — the poll loop respects `min(deep_research_timeout_s, remaining budget)`. |
+
+## Time budget
+
+| Environment variable | Setting | Default | Notes |
+|---|---|---|---|
+| `POLYSEARCH_TIME_BUDGET_S` | `time_budget_s` | (unset) | Global wall-clock budget, in seconds, for a whole run. When set, every first-pass layer (research, grounding, deep-research, community) is bounded to whatever time remains — a layer that would exceed it is cancelled and recorded in `pipeline_errors` rather than left to run unbounded, and the refinement loop is skipped once the budget is already spent. `--time-budget` overrides it per run. Unset (the default) is unbounded — unchanged behavior. |
+| `POLYSEARCH_COMMUNITY_ADAPTER_TIMEOUT_S` | `community_adapter_timeout_s` | `60.0` | Per-adapter timeout for the community layer, applied independently of `POLYSEARCH_TIME_BUDGET_S`. A blocked source (Reddit's OAuth→public→ScrapeCreators fallback chain, a rate-limiter 429 backoff) is cancelled so fusion proceeds with whatever the other sources returned. |
 
 ## Refinement and output
 

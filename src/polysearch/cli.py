@@ -90,6 +90,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force the deep-research layer at any depth (needs a Perplexity key).",
     )
     parser.add_argument(
+        "--time-budget",
+        type=float,
+        metavar="SECONDS",
+        help=(
+            "Global wall-clock budget in seconds for the whole run (default: "
+            "unbounded, or POLYSEARCH_TIME_BUDGET_S). A layer that would exceed "
+            "the remaining budget is cancelled and reported, not left to run "
+            "unbounded."
+        ),
+    )
+    parser.add_argument(
         "--classify",
         action="store_true",
         help="Print the classifier verdict as JSON and exit (no network).",
@@ -252,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         providers = build_providers(settings)
         if args.synthesizer:
             providers = _override_synthesizer(providers, settings, args.synthesizer)
-        asyncio.run(
+        report = asyncio.run(
             run_research(
                 args.topic,
                 depth=args.depth,
@@ -264,12 +275,25 @@ def main(argv: list[str] | None = None) -> int:
                 verify_budget=args.verify_budget,
                 deep_research=args.deep_research,
                 max_iterations=args.max_iterations,
+                time_budget_s=args.time_budget,
             )
         )
     except Exception as exc:  # noqa: BLE001 — top-level guard: map to exit code 1
         print(f"polysearch: pipeline error: {exc}", file=sys.stderr)
         return 1
+    _log_layer_durations(report)
     return 0
+
+
+def _log_layer_durations(report: object) -> None:
+    """Cheap stderr instrumentation for future timeout diagnosis: one line per
+    layer naming how long it ran, in the order layers were produced. Never
+    raises — a malformed/stubbed report in a test just logs nothing."""
+    layers = getattr(report, "layers", None) or []
+    for layer in layers:
+        name = getattr(layer, "layer", "?")
+        duration_ms = getattr(layer, "duration_ms", 0) or 0
+        print(f"polysearch: layer {name} finished in {duration_ms / 1000:.1f}s", file=sys.stderr)
 
 
 if __name__ == "__main__":  # pragma: no cover
