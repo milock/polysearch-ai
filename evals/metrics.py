@@ -92,10 +92,17 @@ _MARKDOWN_NOISE_RE = re.compile(r"\*\*|__|`")
 _MAX_FACT_WINDOW = 3
 
 
+_TOKEN_RE = re.compile(r"\d+\.\d+|[a-z0-9]+")
+
+
 def _normalize_for_match(text: str, *, drop_stopwords: bool) -> str:
     """Lowercase, strip markdown noise, tokenize, and suffix-normalize every
-    word. ``drop_stopwords`` is only ever True for the fact side of a match."""
-    words = re.findall(r"[a-z0-9]+", _MARKDOWN_NOISE_RE.sub("", text.lower()))
+    word. ``drop_stopwords`` is only ever True for the fact side of a match.
+    A decimal number ("18.8") is tokenized whole (tried before the plain
+    alnum-run alternative) — a bare ``[a-z0-9]+`` split it into "18"/"8",
+    corrupting both the text-similarity score and what the numeric guard (see
+    ``_fact_required_numbers``) would find, before either ever saw it."""
+    words = _TOKEN_RE.findall(_MARKDOWN_NOISE_RE.sub("", text.lower()))
     stemmed = [_strip_word_suffix(w) for w in words]
     if drop_stopwords:
         stemmed = [w for w in stemmed if w not in _FACT_STOPWORDS]
@@ -153,18 +160,56 @@ def _number_match_pattern(number_text: str) -> re.Pattern[str] | None:
     return re.compile("(?:" + "|".join(re.escape(v) for v in unique) + ")")
 
 
-def _fact_required_numbers(fact: str) -> list[re.Pattern[str]]:
-    """Every number in ``fact``, each as a flexible-format regex a covering
-    window's raw text must contain at least one of. Deliberately unit-
-    agnostic (18.8 (fact) matches "18.8%", "18.8 percent", or bare "18.8" in
-    the text) — the guard exists only to stop a textually-similar-but-
-    numberless window from riding on the fact's non-numeric vocabulary, not to
-    enforce that a % or $ sign specifically co-occurs."""
-    return [
-        p
-        for p in (_number_match_pattern(n) for n in _NUMBER_RE.findall(fact))
-        if p is not None
-    ]
+
+# Unit/magnitude context immediately around a number in the FACT — if present,
+# the covering window must carry a same-class marker somewhere too (symbol or
+# spelled-out word both count; exact adjacency to the digits is not required,
+# windows are only 1-3 sentences). Without this, a bare "1.2" (from a fact
+# stating "$1.2 million") would be satisfied by an unrelated "1.2%" anywhere
+# in the window — a factor of a million is not a coincidental rounding
+# difference, and the two must not be treated as the same claim.
+_PERCENT_AFTER_RE = re.compile(r"^\s*(%|percent)", re.IGNORECASE)
+_DOLLAR_BEFORE_RE = re.compile(r"\$\s*$")
+_DOLLAR_AFTER_RE = re.compile(r"^\s*(dollars?|usd)\b", re.IGNORECASE)
+_MAGNITUDE_AFTER_RE = re.compile(r"^\s*(million|billion|thousand|[mbk])\b", re.IGNORECASE)
+_UNIT_MARKER_RE: dict[str, re.Pattern[str]] = {
+    "percent": re.compile(r"%|percent", re.IGNORECASE),
+    "dollar": re.compile(r"\$|dollars?|usd", re.IGNORECASE),
+    "million": re.compile(r"million|\d\s*m\b", re.IGNORECASE),
+    "billion": re.compile(r"billion|\d\s*b\b", re.IGNORECASE),
+    "thousand": re.compile(r"thousand|\d\s*k\b", re.IGNORECASE),
+}
+
+
+def _fact_required_numbers(
+    fact: str,
+) -> list[tuple[re.Pattern[str], re.Pattern[str] | None]]:
+    """Every number in ``fact``, each as ``(value_pattern, unit_pattern)``. A
+    covering window's raw text must satisfy value_pattern (flexible
+    formatting: trailing zeros, comma grouping) for EVERY number the fact
+    states, plus unit_pattern (if the fact had %/$/magnitude context around
+    that number — see module note above) — not just at least one of them,
+    so a fact citing two figures ("from $100K to $150K") needs both present."""
+    required: list[tuple[re.Pattern[str], re.Pattern[str] | None]] = []
+    for m in _NUMBER_RE.finditer(fact):
+        value_pattern = _number_match_pattern(m.group(0))
+        if value_pattern is None:
+            continue
+        before = fact[max(0, m.start() - 2) : m.start()]
+        after = fact[m.end() : m.end() + 12]
+        unit_pattern: re.Pattern[str] | None = None
+        if _PERCENT_AFTER_RE.match(after):
+            unit_pattern = _UNIT_MARKER_RE["percent"]
+        elif _DOLLAR_BEFORE_RE.search(before) or _DOLLAR_AFTER_RE.match(after):
+            unit_pattern = _UNIT_MARKER_RE["dollar"]
+        else:
+            mag = _MAGNITUDE_AFTER_RE.match(after)
+            if mag:
+                word = mag.group(1).lower()
+                cls = {"m": "million", "b": "billion", "k": "thousand"}.get(word, word)
+                unit_pattern = _UNIT_MARKER_RE.get(cls)
+        required.append((value_pattern, unit_pattern))
+    return required
 
 
 # Same unresolved-template shape the report writer guards against.
@@ -357,9 +402,10 @@ def _key_fact_coverage(
     scaffolding — Sources-by-Tier, Refinement Trace, Pipeline Decisions/Errors/
     Stats, Citation Integrity — excluded first) after markdown-noise stripping,
     suffix normalization, and (fact-side only) stopword dropping. A fact that
-    contains a number additionally requires its covering window to contain
-    that number (format-flexible); text similarity alone is not enough.
-    ``None`` when there is no text to match against."""
+    contains numbers additionally requires its covering window to contain
+    EVERY one of them (format-flexible, and unit/magnitude-aware — see
+    ``_fact_required_numbers``); text similarity alone is not enough. ``None``
+    when there is no text to match against."""
     facts = [f for f in (key_facts or []) if f and f.strip()]
     total = len(facts)
     if not facts:
@@ -375,7 +421,11 @@ def _key_fact_coverage(
         for raw_window, norm_window in windows:
             if fuzz.token_set_ratio(fact_norm, norm_window) < KEY_FACT_MATCH_THRESHOLD:
                 continue
-            if required_numbers and not any(p.search(raw_window) for p in required_numbers):
+            if required_numbers and not all(
+                value_pattern.search(raw_window)
+                and (unit_pattern is None or unit_pattern.search(raw_window))
+                for value_pattern, unit_pattern in required_numbers
+            ):
                 continue
             covered += 1
             break

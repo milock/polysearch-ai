@@ -1027,6 +1027,99 @@ def test_suffix_stripper_unifies_es_plurals_correctly() -> None:
     assert metrics._strip_word_suffix("processes") == "process"
 
 
+# ---- F3d: fix round 2 (reviewer specifics) -------------------------------- #
+# The reviewer independently reproduced the numeric failure and added two
+# specifics: (1a) a second root cause — _normalize_for_match tokenizes on
+# [a-z0-9]+, which splits "18.8" into "18"/"8" even before the guard runs;
+# (2a) confirmed the tier-label leak survives in bullet form, not just as a
+# heading, which the section-exclusion fix (not the heading-only patch) must
+# cover principally.
+def test_tokenizer_keeps_decimal_numbers_whole() -> None:
+    """Regression: [a-z0-9]+ tokenization split "18.8" into "18" and "8"
+    before either the text-similarity score or the numeric guard ever saw it.
+    Decimal number spans must survive as one token."""
+    normalized = metrics._normalize_for_match("rate of 18.8 percent", drop_stopwords=False)
+    assert "18.8" in normalized.split()
+    assert "8" not in normalized.split()
+
+
+def test_numeric_guard_fails_when_text_has_a_different_number() -> None:
+    """Reviewer's exact acceptance case: fact says 18.8%, text says 30% (a
+    number IS present, just the wrong one) -> not covered."""
+    cov, covered, _ = metrics._key_fact_coverage(
+        ["the rate is 18.8%"],
+        "the rate observed across the sample was 30%.",
+    )
+    assert covered == 0
+
+
+def test_numeric_guard_fails_when_text_has_no_number_at_all() -> None:
+    """Reviewer's exact acceptance case: fact carries a number, text carries
+    none (on-topic vocabulary only) -> not covered. Distinct from the
+    wrong-number case above — no digit anywhere for the guard to find."""
+    cov, covered, _ = metrics._key_fact_coverage(
+        ["the rate is 18.8%"],
+        "the rate observed across the sample was notably elevated.",
+    )
+    assert covered == 0
+
+
+def test_tier_label_bullet_inside_sources_section_not_covered() -> None:
+    """Reviewer confirmed the tier-label leak survives in bullet form (not
+    just as a heading) — e.g. "- Low (opinion, marketing, unverified) (3)".
+    The section-exclusion fix (whole H2 removed, not just its heading line)
+    must catch this regardless of whether the tier label appears as a
+    heading or a plain bullet inside the Sources-by-Tier section."""
+    text = (
+        "## Executive Summary\n\n"
+        "The report focuses on general market trends and says nothing about "
+        "database internals.\n\n"
+        "## Sources by Quality Tier\n\n"
+        "- Low (opinion, marketing, unverified) (3)\n"
+    )
+    fact = "opinion, marketing, and unverified sources"
+    cov, covered, _ = metrics._key_fact_coverage([fact], text)
+    assert covered == 0
+
+
+def test_numeric_guard_is_magnitude_and_unit_aware() -> None:
+    """Gap found while implementing the reviewer's 1b building blocks: a bare
+    unit-agnostic digit match would let "$1.2 million" (fact) be satisfied by
+    an unrelated "1.2 percent" elsewhere in the window — a factor of a
+    million is not a coincidental rounding difference. The guard must also
+    check the %/$/magnitude context around each number, not just its bare
+    value, while still tolerating symbol-vs-word spelling (see the
+    unit-and-format-variants test above)."""
+    cov, covered, _ = metrics._key_fact_coverage(
+        ["quarterly revenue reached 1.2 million dollars"],
+        "quarterly revenue reached 1.2 percent according to the filing.",
+    )
+    assert covered == 0
+
+    cov, covered, _ = metrics._key_fact_coverage(
+        ["quarterly revenue reached 1.2 million dollars"],
+        "quarterly revenue reached $1.2 million according to the filing.",
+    )
+    assert covered == 1
+
+
+def test_numeric_guard_requires_every_number_in_a_multi_number_fact() -> None:
+    """Per the reviewer's 1b spec: if a fact has >=1 number, the covering
+    window must contain EACH of them, not just one."""
+    fact = "revenue grew from $100,000 to $150,000 over the year"
+    cov, covered, _ = metrics._key_fact_coverage(
+        [fact],
+        "revenue grew from $100,000 to an unspecified higher figure over the year.",
+    )
+    assert covered == 0
+
+    cov, covered, _ = metrics._key_fact_coverage(
+        [fact],
+        "revenue grew from $100,000 to $150,000 over the year, a strong result.",
+    )
+    assert covered == 1
+
+
 # ---- F4: timeout env override --------------------------------------------- #
 def test_timeout_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYSEARCH_EVAL_TIMEOUT_SEC", raising=False)
