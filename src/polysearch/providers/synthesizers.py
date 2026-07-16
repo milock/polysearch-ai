@@ -84,9 +84,15 @@ def build_synthesis_prompt(
         "allusion to it. State the specific figure the finding rests on (prefer "
         "\"held at 3.50%-3.75% as of June 2026\" over \"rates held steady\"). When "
         "the topic asks for a specific quantity, entity, count, or date, state it "
-        "explicitly with its value and cite the source whose figure you used. End "
-        "each bullet with a source tag like [HIGH: domain, date], [COMMUNITY], or "
-        "[SME].",
+        "explicitly with its value and cite the source whose figure you used. "
+        "Directly answer every factual dimension the topic implies, each in plain "
+        "answer-language: the current value, the direction of any trend over the "
+        "period (up, down, or flat, with the size of the change), the number or "
+        "count of any relevant events, the leading or largest entity where one is "
+        "asked for, and the date of the most recent relevant event. If the "
+        "material does not support one of these, say so explicitly rather than "
+        "omitting it. End each bullet with a source tag like [HIGH: domain, date], "
+        "[COMMUNITY], or [SME].",
         "",
         "## Source Quality Notes",
         "2-5 bullets on conflicts, gaps, or source-tier concentration risks. Be "
