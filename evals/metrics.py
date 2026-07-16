@@ -16,6 +16,11 @@ Two rules learned the hard way:
   split across two sentences) is caught but words merely scattered across a long
   document are not. Facts are matched after markdown-noise stripping, suffix
   normalization, and fact-side stopword dropping (see ``KEY_FACT_MATCH_THRESHOLD``).
+  Trailing pipeline scaffolding (Sources-by-Tier, Refinement Trace, Pipeline
+  Decisions/Errors/Stats, Citation Integrity) is excluded first — coverage
+  measures the synthesis/findings body, not an appendix or a raw search-query
+  echo. A fact carrying a number additionally requires its covering window to
+  state that number; matching vocabulary alone is not sufficient.
 
 The gated citation metric is **claim-level** (``claims_supported/claims_total``);
 the raw pair-level rate is kept as a secondary, ungated column.
@@ -58,7 +63,14 @@ def _strip_word_suffix(word: str) -> str:
     if word.endswith("ed") and len(word) > 4:
         return word[:-2]
     if word.endswith("es") and len(word) > 4:
-        return word[:-2]
+        # Only strip both letters when the singular needs the sibilant vowel
+        # back ("boxes" -> "box", "watches" -> "watch"); otherwise the "e"
+        # belongs to the base word and only the "-s" is the plural marker
+        # ("codes" -> "code", "types" -> "type", not "cod"/"typ").
+        stem = word[:-2]
+        if stem.endswith(("s", "x", "z", "ch", "sh")):
+            return stem
+        return word[:-1]
     if word.endswith("s") and len(word) > 3 and not word.endswith("ss"):
         return word[:-1]
     return word
@@ -90,18 +102,69 @@ def _normalize_for_match(text: str, *, drop_stopwords: bool) -> str:
     return " ".join(stemmed)
 
 
-def _fact_windows(units: list[str]) -> list[str]:
-    """Every run of 1 to ``_MAX_FACT_WINDOW`` consecutive sentence units,
-    normalized once so a coverage check over many facts doesn't re-tokenize the
-    same windows repeatedly."""
+def _fact_windows(units: list[str]) -> list[tuple[str, str]]:
+    """Every run of 1 to ``_MAX_FACT_WINDOW`` consecutive sentence units, as
+    ``(raw, normalized)`` pairs computed once so a coverage check over many
+    facts doesn't re-tokenize the same windows repeatedly. ``raw`` (just
+    joined, not stemmed/stopword-processed) is what the numeric guard checks —
+    stemming tokenizes on ``[a-z0-9]+`` and would split "18.8%" into "18"/"8"."""
     n = len(units)
     windows = []
     for size in range(1, _MAX_FACT_WINDOW + 1):
         for i in range(n - size + 1):
-            windows.append(
-                _normalize_for_match(" ".join(units[i : i + size]), drop_stopwords=False)
-            )
+            raw = " ".join(units[i : i + size])
+            windows.append((raw, _normalize_for_match(raw, drop_stopwords=False)))
     return windows
+
+
+# Matches a number in either the fact or the report text: optional leading
+# "$", digits with optional comma grouping and decimal point, optional
+# trailing "%". Units are deliberately not required to co-occur with the
+# digits — the guard only needs the numeric value itself.
+_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _number_match_pattern(number_text: str) -> re.Pattern[str] | None:
+    """Build a regex matching ``number_text``'s numeric value with flexible
+    formatting (trailing zeros, comma grouping) in report text. Adapted from
+    the citation-number-matching approach in
+    ``polysearch.verification.verifier._normalize_number_to_regex`` — kept
+    self-contained here rather than imported, since that module pulls in the
+    verifier's network/scrape stack (httpx/Playwright/Firecrawl), which the
+    eval harness has no other reason to depend on."""
+    m = _NUMBER_RE.search(number_text)
+    if not m:
+        return None
+    raw_num = m.group(0).replace(",", "")
+    variants = [raw_num]
+    if "." in raw_num:
+        int_part, frac_part = raw_num.split(".", 1)
+        frac_stripped = frac_part.rstrip("0")
+        if frac_stripped != frac_part:
+            variants.append(f"{int_part}.{frac_stripped}" if frac_stripped else int_part)
+    else:
+        variants.extend([f"{raw_num}.0", f"{raw_num}.00"])
+        if len(raw_num) >= 4:
+            rev = raw_num[::-1]
+            with_commas = ",".join(rev[i : i + 3] for i in range(0, len(rev), 3))[::-1]
+            variants.append(with_commas)
+    seen: set[str] = set()
+    unique = [v for v in variants if not (v in seen or seen.add(v))]
+    return re.compile("(?:" + "|".join(re.escape(v) for v in unique) + ")")
+
+
+def _fact_required_numbers(fact: str) -> list[re.Pattern[str]]:
+    """Every number in ``fact``, each as a flexible-format regex a covering
+    window's raw text must contain at least one of. Deliberately unit-
+    agnostic (18.8 (fact) matches "18.8%", "18.8 percent", or bare "18.8" in
+    the text) — the guard exists only to stop a textually-similar-but-
+    numberless window from riding on the fact's non-numeric vocabulary, not to
+    enforce that a % or $ sign specifically co-occurs."""
+    return [
+        p
+        for p in (_number_match_pattern(n) for n in _NUMBER_RE.findall(fact))
+        if p is not None
+    ]
 
 
 # Same unresolved-template shape the report writer guards against.
@@ -238,6 +301,45 @@ def _tier_mix(norm: NormalizedReport) -> tuple[float | None, int]:
 # availability") purely by coincidence. Excluded from the fact-matching pool.
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s")
 
+# H2 sections that are the pipeline's own scaffolding, never a stated finding:
+# a Refinement-Trace follow-up query is maximally keyword-dense by
+# construction (it exists to search well, not to report a fact), and a
+# Sources-by-Tier bibliography entry can share vocabulary with a fact purely
+# through an article title. Broader than evals/judge.py's
+# ``strip_process_sections`` — the judge still needs the source list for
+# citation-accuracy scoring; coverage has no use for it. Verified against
+# every real report artifact on hand: this exact heading text (case-
+# insensitive substring) appears consistently across both the public and
+# internal report shapes.
+_NON_SYNTHESIS_SECTION_KEYWORDS: tuple[str, ...] = (
+    "pipeline decisions",
+    "pipeline stats",
+    "pipeline errors",
+    "refinement trace",
+    "citation integrity",
+    "sources by",
+)
+
+_H2_RE = re.compile(r"^## +(.*)$")
+
+
+def _strip_non_synthesis_sections(md: str) -> str:
+    """Remove every H2 section (and everything under it, including its own H3
+    subsections) whose heading names pipeline scaffolding rather than report
+    content, so key-fact matching only sees the synthesis/findings body."""
+    out: list[str] = []
+    skip = False
+    for line in md.splitlines():
+        h2 = _H2_RE.match(line)
+        if h2:
+            skip = any(k in h2.group(1).lower() for k in _NON_SYNTHESIS_SECTION_KEYWORDS)
+            if skip:
+                continue
+        if skip:
+            continue
+        out.append(line)
+    return "\n".join(out)
+
 
 def _sentence_units(text: str) -> list[str]:
     return [
@@ -251,23 +353,32 @@ def _key_fact_coverage(
     key_facts: list[str], text: str
 ) -> tuple[float | None, int, int]:
     """(coverage fraction, covered, total). Each fact is matched against every
-    1-3 sentence window (best window wins) after markdown-noise stripping,
-    suffix normalization, and (fact-side only) stopword dropping. ``None`` when
-    there is no text to match against."""
+    1-3 sentence window of the synthesis/findings body (trailing pipeline
+    scaffolding — Sources-by-Tier, Refinement Trace, Pipeline Decisions/Errors/
+    Stats, Citation Integrity — excluded first) after markdown-noise stripping,
+    suffix normalization, and (fact-side only) stopword dropping. A fact that
+    contains a number additionally requires its covering window to contain
+    that number (format-flexible); text similarity alone is not enough.
+    ``None`` when there is no text to match against."""
     facts = [f for f in (key_facts or []) if f and f.strip()]
     total = len(facts)
     if not facts:
         return 1.0, 0, 0
-    units = _sentence_units(text)
+    units = _sentence_units(_strip_non_synthesis_sections(text))
     if not units:
         return None, 0, total
     windows = _fact_windows(units)
     covered = 0
     for fact in facts:
         fact_norm = _normalize_for_match(fact, drop_stopwords=True)
-        best = max(fuzz.token_set_ratio(fact_norm, w) for w in windows)
-        if best >= KEY_FACT_MATCH_THRESHOLD:
+        required_numbers = _fact_required_numbers(fact)
+        for raw_window, norm_window in windows:
+            if fuzz.token_set_ratio(fact_norm, norm_window) < KEY_FACT_MATCH_THRESHOLD:
+                continue
+            if required_numbers and not any(p.search(raw_window) for p in required_numbers):
+                continue
             covered += 1
+            break
     return covered / total, covered, total
 
 

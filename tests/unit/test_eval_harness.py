@@ -907,6 +907,126 @@ def test_real_artifact_postgres_mysql_genuinely_missing_fact_still_fails() -> No
     assert covered == 0
 
 
+# ---- F3c: fix round — numeric guard, section exclusion, -es suffix -------- #
+# Review findings on task r3b: (1) CRITICAL — a fact with a number could be
+# marked covered by a window that matches on non-numeric vocabulary alone
+# while stating a different (or no) number; (2) IMPORTANT — the match pool
+# still included non-content surfaces (Refinement-Trace query echoes,
+# Sources-bibliography bullets); (3) MINOR — the suffix stripper's "-es" rule
+# over-stripped ("codes" -> "cod" instead of "code").
+def test_numeric_guard_requires_number_in_covering_window() -> None:
+    """Regression: a fact "...approximately 18.8 percent" scored COVERED
+    against a report where "18.8" appears nowhere, because the fact's
+    non-numeric tokens overlapped a generic on-topic sentence above
+    threshold. A fact with a number must not be covered by a window that
+    matches textually but states a different number."""
+    text = (
+        "Across the sampled clinics, the mean no-show rate was reported at "
+        "roughly 30 percent for adult primary care visits."
+    )
+    fact = "mean no-show rate is approximately 18.8 percent"
+    cov, covered, _ = metrics._key_fact_coverage([fact], text)
+    assert covered == 0
+
+
+def test_numeric_guard_passes_once_the_number_appears() -> None:
+    text = (
+        "Across the sampled clinics, the mean no-show rate was reported at "
+        "roughly 30 percent for adult primary care visits. A separate "
+        "benchmark study put the mean no-show rate at 18.8% instead."
+    )
+    fact = "mean no-show rate is approximately 18.8 percent"
+    cov, covered, _ = metrics._key_fact_coverage([fact], text)
+    assert covered == 1
+
+
+def test_numeric_guard_tolerates_unit_and_format_variants() -> None:
+    """18.8 (fact) ~ 18.8% ~ "18.8 percent"; $200 ~ "200 dollars"; 1,500 ~
+    1500 — the guard checks the numeric value, not which side spells out the
+    unit or how it's formatted."""
+    cov, covered, _ = metrics._key_fact_coverage(
+        ["a rate near 18.8%"],
+        "the study found a rate of 18.8 percent among respondents.",
+    )
+    assert covered == 1
+
+    cov, covered, _ = metrics._key_fact_coverage(
+        ["an average visit cost of 200 dollars"],
+        "the average visit cost was $200 at these clinics.",
+    )
+    assert covered == 1
+
+    cov, covered, _ = metrics._key_fact_coverage(
+        ["enrollment near 1500 patients"],
+        "enrollment reached 1,500 patients this quarter.",
+    )
+    assert covered == 1
+
+
+def test_fact_only_in_refinement_trace_query_line_not_covered() -> None:
+    """A fact that only appears verbatim in a Refinement-Trace follow-up-query
+    echo (maximally keyword-dense by construction, never a stated finding)
+    must not count as covered — regression from a private-suite finding where
+    the best-matching window for a fact was a raw query-echo line."""
+    text = (
+        "## Executive Summary\n\n"
+        "The report focuses on general market trends and says nothing about "
+        "database internals.\n\n"
+        "## Refinement Trace\n\n"
+        "### Iteration 1 — coverage 0.40\n"
+        "- **Follow-up queries run:**\n"
+        "  - streaming replication group replication failover high "
+        "availability postgresql mysql 2026\n"
+    )
+    fact = "replication and high availability: streaming replication, group replication, failover"
+    cov, covered, _ = metrics._key_fact_coverage([fact], text)
+    assert covered == 0
+
+
+def test_fact_in_sources_bibliography_only_not_covered() -> None:
+    """A fact matching only a bibliography entry's title (appendix, not a
+    stated finding) must not count as covered."""
+    text = (
+        "## Executive Summary\n\n"
+        "The report focuses on general market trends and says nothing about "
+        "database internals.\n\n"
+        "## Sources by Quality Tier\n\n"
+        "### High (primary, peer-reviewed, official) (3)\n"
+        "- [Streaming replication and failover guide](https://example.com) "
+        "_[2026-01-01]_\n"
+    )
+    fact = "streaming replication and failover guide"
+    cov, covered, _ = metrics._key_fact_coverage([fact], text)
+    assert covered == 0
+
+
+def test_synthesis_body_still_matches_after_section_exclusion() -> None:
+    """Sanity: excluding trailing structural sections must not break ordinary
+    matching in the kept synthesis/findings body."""
+    text = (
+        "## Executive Summary\n\n"
+        "The database supports streaming replication and automatic "
+        "failover.\n\n"
+        "## Pipeline Decisions\n\n"
+        "- Topic type: COMPARISON\n"
+    )
+    fact = "streaming replication and automatic failover"
+    cov, covered, _ = metrics._key_fact_coverage([fact], text)
+    assert covered == 1
+
+
+def test_suffix_stripper_unifies_es_plurals_correctly() -> None:
+    """The blanket "-es -> strip 2 chars" rule wrongly turned "codes"/"types"
+    into "cod"/"typ" (should be "code"/"type" via -s only); "-es" should only
+    strip both letters when the singular needs the sibilant vowel back
+    ("boxes" -> "box", "watches" -> "watch")."""
+    assert metrics._strip_word_suffix("codes") == "code"
+    assert metrics._strip_word_suffix("types") == "type"
+    assert metrics._strip_word_suffix("boxes") == "box"
+    assert metrics._strip_word_suffix("watches") == "watch"
+    assert metrics._strip_word_suffix("processes") == "process"
+
+
 # ---- F4: timeout env override --------------------------------------------- #
 def test_timeout_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYSEARCH_EVAL_TIMEOUT_SEC", raising=False)
