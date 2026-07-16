@@ -359,6 +359,7 @@ async def _score_pair(
     openai_client: Any | None,
     fuzzy_threshold: float,
     embedding_model: str,
+    sem: asyncio.Semaphore,
 ) -> _ScoredResult:
     """Score one (claim, cited-URL) pair against already-fetched page content.
 
@@ -366,7 +367,35 @@ async def _score_pair(
     embedding fallback; no network fetch. ``result`` is the shared scrape of
     ``url``, so every claim citing that URL is checked against the same content
     without re-fetching it.
+
+    ``sem`` bounds the number of pairs scored concurrently. Scoring is cheap, but
+    the borderline-quote embedding fallback makes an OpenAI call per pair — with
+    O(claims × sources) pairs, unbounded concurrency would fire a burst of
+    embedding requests large enough to 429-storm the account, so the whole score
+    phase runs under the same ``max_concurrency`` bound the scrape phase uses.
     """
+    async with sem:
+        return await _score_pair_inner(
+            claim,
+            url,
+            tier_before,
+            result,
+            openai_client=openai_client,
+            fuzzy_threshold=fuzzy_threshold,
+            embedding_model=embedding_model,
+        )
+
+
+async def _score_pair_inner(
+    claim: Claim,
+    url: str,
+    tier_before: Tier,
+    result: scrape.ScrapeResult,
+    *,
+    openai_client: Any | None,
+    fuzzy_threshold: float,
+    embedding_model: str,
+) -> _ScoredResult:
     if result.status == "URL_DEAD":
         return _ScoredResult(
             url=url,
@@ -701,6 +730,10 @@ async def verify(
 
     verified_results: list[_ScoredResult] = []
     if to_score:
+        # Scoring — including the per-pair embedding fallback — runs under the same
+        # concurrency bound as scraping so a large pair count can't burst OpenAI
+        # embedding calls into a 429 storm.
+        score_sem = asyncio.Semaphore(max_concurrency)
         score_coros = []
         for (claim, url, tier) in to_score:
             result = scrape_map[url]
@@ -731,6 +764,7 @@ async def verify(
                         openai_client=openai_client,
                         fuzzy_threshold=fuzzy,
                         embedding_model=settings.embedding_model,
+                        sem=score_sem,
                     )
                 )
         raw = await asyncio.gather(*score_coros, return_exceptions=True)
@@ -783,8 +817,12 @@ async def verify(
 
     all_results = verified_results + skipped_results + blocked_results
     # Cost is per unique scrape, not per (claim, url) pair — a page cited by many
-    # claims is fetched (and billed) once.
-    total_cost = len(scrape_map) * cost_per_scrape
+    # claims is fetched (and billed) once. A scrape that raised out of the chain
+    # never completed a billable fetch, so exclude those from the cost.
+    scrapes_billed = sum(
+        1 for r in scrape_map.values() if not isinstance(r, BaseException)
+    )
+    total_cost = scrapes_billed * cost_per_scrape
     total_duration_ms = int((time.perf_counter() - started) * 1000)
     report = _aggregate(all_results, total_cost, total_duration_ms)
     report.credits_exhausted_hit = credits_exhausted.is_set()
