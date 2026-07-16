@@ -320,18 +320,17 @@ async def _embed_cosine_max(
 # -----------------------------------------------------------------------------
 
 
-async def _verify_one(
-    claim: Claim,
+async def _scrape_one(
     url: str,
-    tier_before: Tier,
     *,
     app: Any,
-    openai_client: Any | None,
-    fuzzy_threshold: float,
-    embedding_model: str,
     sem: asyncio.Semaphore,
     credits_exhausted: asyncio.Event,
-) -> _ScoredResult:
+) -> scrape.ScrapeResult:
+    """Fetch one URL through the resilient scrape chain, once. Deduplicated by the
+    caller so a URL cited by many claims is fetched a single time — the dominant
+    runtime/cost sink (r1 P1) was re-scraping the same page once per citing claim.
+    """
     async with sem:
         # Credit exhaustion is a Firecrawl-account-level failure, not a per-URL
         # signal — once the account is out of credits, there's no point burning
@@ -339,18 +338,35 @@ async def _verify_one(
         # so every citation still gets the free httpx (+ Playwright) tier attempt
         # rather than being discarded wholesale.
         if credits_exhausted.is_set():
-            result = await scrape.fetch_page(url, skip_firecrawl=True)
-        else:
-            try:
-                result = await scrape.fetch_page(
-                    url, firecrawl_app=app, on_credits_exhausted="raise"
-                )
-            except FirecrawlCreditsExhausted:
-                # Latch the shared flag so peers skip straight to httpx the moment
-                # they acquire the semaphore, then retry this same citation.
-                credits_exhausted.set()
-                result = await scrape.fetch_page(url, skip_firecrawl=True)
+            return await scrape.fetch_page(url, skip_firecrawl=True)
+        try:
+            return await scrape.fetch_page(
+                url, firecrawl_app=app, on_credits_exhausted="raise"
+            )
+        except FirecrawlCreditsExhausted:
+            # Latch the shared flag so peers skip straight to httpx the moment
+            # they acquire the semaphore, then retry this same URL.
+            credits_exhausted.set()
+            return await scrape.fetch_page(url, skip_firecrawl=True)
 
+
+async def _score_pair(
+    claim: Claim,
+    url: str,
+    tier_before: Tier,
+    result: scrape.ScrapeResult,
+    *,
+    openai_client: Any | None,
+    fuzzy_threshold: float,
+    embedding_model: str,
+) -> _ScoredResult:
+    """Score one (claim, cited-URL) pair against already-fetched page content.
+
+    Pure CPU work (fuzzy quote / number matching) plus an optional per-quote
+    embedding fallback; no network fetch. ``result`` is the shared scrape of
+    ``url``, so every claim citing that URL is checked against the same content
+    without re-fetching it.
+    """
     if result.status == "URL_DEAD":
         return _ScoredResult(
             url=url,
@@ -645,36 +661,80 @@ async def verify(
     if priority == "tier":
         targets = _sort_by_tier(targets)
 
-    # Budget enforcement: determine how many scrapes we can afford.
+    # Budget enforcement runs on UNIQUE URLs, not (claim, url) pairs: a page is
+    # scraped once and every claim citing it is scored against that one fetch.
+    # Claim extraction attaches the whole corpus URL list to every claim, so the
+    # pair count is O(claims × sources) while the real network cost is O(unique
+    # URLs) — re-fetching per pair was the r1 P1 runtime/cost blowup. Dedupe in
+    # tier-sorted order so the budget cap keeps the highest-tier pages.
+    unique_urls: list[str] = []
+    url_tier: dict[str, Tier] = {}
+    for (_claim, url, tier) in targets:
+        if url not in url_tier:
+            url_tier[url] = tier
+            unique_urls.append(url)
+
     max_scrapes = (
-        int(budget_usd // cost_per_scrape) if cost_per_scrape > 0 else len(targets)
+        int(budget_usd // cost_per_scrape) if cost_per_scrape > 0 else len(unique_urls)
     )
-    to_verify = targets[:max_scrapes]
-    to_skip = targets[max_scrapes:]
+    urls_to_scrape = unique_urls[:max_scrapes]
+    scrape_set = set(urls_to_scrape)
 
     sem = asyncio.Semaphore(max_concurrency)
     credits_exhausted = asyncio.Event()
-    coros = [
-        _verify_one(
-            claim,
-            url,
-            tier,
-            app=app,
-            openai_client=openai_client,
-            fuzzy_threshold=fuzzy,
-            embedding_model=settings.embedding_model,
-            sem=sem,
-            credits_exhausted=credits_exhausted,
-        )
-        for (claim, url, tier) in to_verify
-    ]
+
+    # Fetch each affordable unique URL exactly once, in parallel.
+    scrape_map: dict[str, scrape.ScrapeResult | BaseException] = {}
+    if urls_to_scrape:
+        scrape_coros = [
+            _scrape_one(url, app=app, sem=sem, credits_exhausted=credits_exhausted)
+            for url in urls_to_scrape
+        ]
+        raw_scrapes = await asyncio.gather(*scrape_coros, return_exceptions=True)
+        scrape_map = dict(zip(urls_to_scrape, raw_scrapes, strict=True))
+
+    # Score every (claim, url) pair whose URL was scraped, against the shared
+    # fetch. Scoring is cheap (fuzzy match + optional embedding), so no need to
+    # cap its concurrency the way the network fetches are capped.
+    to_score = [t for t in targets if t[1] in scrape_set]
+    to_skip = [t for t in targets if t[1] not in scrape_set]
+
     verified_results: list[_ScoredResult] = []
-    if coros:
-        raw = await asyncio.gather(*coros, return_exceptions=True)
-        for (claim, url, tier), item in zip(to_verify, raw, strict=True):
-            # ``_verify_one`` no longer raises FirecrawlCreditsExhausted out to
-            # here — a 402 is caught internally and retried via the httpx tier.
-            # This branch is a defensive catch-all for unexpected exceptions.
+    if to_score:
+        score_coros = []
+        for (claim, url, tier) in to_score:
+            result = scrape_map[url]
+            if isinstance(result, BaseException):
+                # A scrape that raised out of the chain — score can't run, so mark
+                # the pair dead defensively (the chain catches 402 internally).
+                async def _dead(
+                    claim: Claim = claim, url: str = url, tier: Tier = tier,
+                    result: BaseException = result,
+                ) -> _ScoredResult:
+                    return _ScoredResult(
+                        url=url,
+                        claim_id=claim.claim_id,
+                        status="URL_DEAD",
+                        tier_before=tier,
+                        tier_after=authority.downgrade_if_undated(tier, False),
+                        error=f"{type(result).__name__}: {result}",
+                    )
+
+                score_coros.append(_dead())
+            else:
+                score_coros.append(
+                    _score_pair(
+                        claim,
+                        url,
+                        tier,
+                        result,
+                        openai_client=openai_client,
+                        fuzzy_threshold=fuzzy,
+                        embedding_model=settings.embedding_model,
+                    )
+                )
+        raw = await asyncio.gather(*score_coros, return_exceptions=True)
+        for (claim, url, tier), item in zip(to_score, raw, strict=True):
             if isinstance(item, BaseException):
                 verified_results.append(
                     _ScoredResult(
@@ -722,7 +782,9 @@ async def verify(
     ]
 
     all_results = verified_results + skipped_results + blocked_results
-    total_cost = len(verified_results) * cost_per_scrape
+    # Cost is per unique scrape, not per (claim, url) pair — a page cited by many
+    # claims is fetched (and billed) once.
+    total_cost = len(scrape_map) * cost_per_scrape
     total_duration_ms = int((time.perf_counter() - started) * 1000)
     report = _aggregate(all_results, total_cost, total_duration_ms)
     report.credits_exhausted_hit = credits_exhausted.is_set()

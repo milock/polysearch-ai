@@ -381,6 +381,85 @@ def test_citation_verifier_defaults_raised() -> None:
     assert sig.parameters["max_concurrency"].default == 8
 
 
+async def test_shared_url_scraped_once_across_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dominant runtime/cost sink (r1 P1): claim extraction attaches the full
+    corpus URL list to every claim, so N claims each cite the same M URLs. Each
+    unique URL must be fetched exactly ONCE and every (claim, url) pair scored
+    against the cached content — not re-scraped per claim. total_citations stays
+    pair-level (N*M) but network fetches collapse to the unique-URL count."""
+    shared = ["https://cms.gov/shared-a", "https://cms.gov/shared-b"]
+    app = _FakeApp(
+        api_key="x",
+        responses={
+            u: {
+                "success": True,
+                "markdown": "The report cites 45% growth for 2026.",
+                "metadata": {"published_date": "2026-01-01"},
+            }
+            for u in shared
+        },
+    )
+    _install_fake_app(monkeypatch, app)
+
+    # Three distinct claims, each citing BOTH shared URLs → 6 (claim, url) pairs.
+    claims = [
+        Claim(
+            text=f"Claim {i} asserts 45% growth.",
+            source_urls=shared,
+            numbers=["45%"],
+            claim_id=f"cshare{i}",
+        )
+        for i in range(3)
+    ]
+    report = await verify(claims, budget_usd=1.0)
+
+    # Pair-level accounting is unchanged: 3 claims × 2 URLs = 6 citation pairs.
+    assert report.total_citations == 6
+    # But each unique URL is scraped exactly once, not once per claim.
+    assert sorted(app.scrape_calls) == sorted(shared)
+    assert len(app.scrape_calls) == 2
+    # Cost reflects the 2 real scrapes, not the 6 pairs.
+    assert report.total_cost_usd == pytest.approx(2 * 0.0032, rel=1e-6)
+    # Every pair still scores OK (all three claims supported).
+    assert report.claims_total == 3
+    assert report.claims_supported == 3
+
+
+async def test_shared_url_budget_caps_unique_scrapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Budget caps the number of UNIQUE scrapes; pairs on an unscraped URL are
+    SKIPPED_BUDGET. With 2 claims each citing 3 shared URLs and a 2-scrape budget,
+    2 URLs are fetched and the third URL's 2 pairs are skipped."""
+    shared = [f"https://cms.gov/u{i}" for i in range(3)]
+    app = _FakeApp(
+        api_key="x",
+        responses={
+            u: {
+                "success": True,
+                "markdown": "content",
+                "metadata": {"published_date": "2026-01-01"},
+            }
+            for u in shared
+        },
+    )
+    _install_fake_app(monkeypatch, app)
+    claims = [
+        Claim(text="...", source_urls=shared, claim_id=f"cb{i}") for i in range(2)
+    ]
+    report = await verify(
+        claims, budget_usd=0.01, firecrawl_cost_per_scrape=0.005
+    )
+    # 2 claims × 3 URLs = 6 pairs total.
+    assert report.total_citations == 6
+    # budget 0.01 / 0.005 = 2 unique scrapes.
+    assert len(app.scrape_calls) == 2
+    # The third URL's 2 pairs are skipped.
+    assert report.skipped_budget == 2
+
+
 # -----------------------------------------------------------------------------
 # BLOCKED tier (hard-exclude)
 # -----------------------------------------------------------------------------
