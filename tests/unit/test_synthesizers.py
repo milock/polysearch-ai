@@ -94,6 +94,80 @@ def test_prompt_has_no_humanizer_phrases():
     assert "write in plain, direct prose." in prompt
 
 
+def test_prompt_requires_concrete_facts_in_key_findings():
+    """P2 fact density: Key Findings instructions must demand concrete figures/
+    dates/names, not exec-summary allusions."""
+    prompt = build_synthesis_prompt("topic", _layers(), style_constraints=None).lower()
+    assert "concrete" in prompt
+    # The prompt must instruct stating the actual value, not alluding to it.
+    assert "state the" in prompt or "state each" in prompt
+
+
+def test_prompt_requires_internal_consistency():
+    """P3 self-inconsistency guard: prose figures must match the report's own
+    lists/counts (the 'cut twice' vs three-cuts defect)."""
+    prompt = build_synthesis_prompt("topic", _layers(), style_constraints=None).lower()
+    assert "consistent" in prompt
+
+
+def test_high_tier_excerpt_widened_over_base():
+    """HIGH/MEDIUM sources get the wider excerpt budget; lower tiers stay at the
+    600-char base."""
+    long_text = "FACT " * 400  # 2000 chars
+    layers = [
+        LayerOutput(
+            layer="research",
+            results=[
+                SourceResult(
+                    url="https://example.gov/a",
+                    title="Authoritative",
+                    snippet="HI" + long_text,
+                    tier="HIGH",
+                    layer="research",
+                ),
+                SourceResult(
+                    url="https://forum.example/b",
+                    title="Forum",
+                    snippet="LO" + long_text,
+                    tier="COMMUNITY",
+                    layer="research",
+                ),
+            ],
+        )
+    ]
+    prompt = build_synthesis_prompt(
+        "topic", layers, style_constraints=None, excerpt_chars=1200
+    )
+    # Locate each rendered source line and measure how much snippet reached it.
+    hi_line = next(ln for ln in prompt.splitlines() if "HI" + "FACT" in ln)
+    lo_line = next(ln for ln in prompt.splitlines() if "LO" + "FACT" in ln)
+    hi_snip = hi_line.split(" — ", 1)[1]
+    lo_snip = lo_line.split(" — ", 1)[1]
+    assert len(hi_snip) == 1200
+    assert len(lo_snip) == 600
+
+
+def test_excerpt_chars_defaults_to_1200():
+    long_text = "x" * 2000
+    layers = [
+        LayerOutput(
+            layer="research",
+            results=[
+                SourceResult(
+                    url="https://example.gov/a",
+                    title="Authoritative",
+                    snippet=long_text,
+                    tier="HIGH",
+                    layer="research",
+                ),
+            ],
+        )
+    ]
+    prompt = build_synthesis_prompt("topic", layers, style_constraints=None)
+    line = next(ln for ln in prompt.splitlines() if "xxxx" in ln)
+    assert len(line.split(" — ", 1)[1]) == 1200
+
+
 def test_prompt_appends_style_constraints_when_set():
     prompt = build_synthesis_prompt(
         "topic", _layers(), style_constraints="Prefer active voice."
