@@ -63,6 +63,24 @@ _COMMUNITY_WINDOW_DAYS = 30
 
 _LINKEDIN_URL_RE = re.compile(r"https?://(?:[\w.-]*\.)?linkedin\.com/[^\s\"'<>]+", re.IGNORECASE)
 
+# The first pass gets only a FRACTION of whatever's remaining when a global
+# time_budget_s is set, reserving a tail slice for synthesis, verification, and
+# the recovery pass — those phases run strictly AFTER the first pass and were
+# previously handed only the harness's outer slack (~120s) when the first pass
+# legitimately consumed the whole remaining budget, risking a SIGKILL before
+# write_report ever ran. No time_budget_s set -> this fraction never applies
+# (first_pass_budget stays None, unbounded, exactly as before).
+_FIRST_PASS_BUDGET_FRACTION = 0.8
+
+# Below this many remaining seconds, the refinement loop is skipped outright
+# rather than started — a loop needs at least one coverage-evaluator call plus
+# a research/grounding fan-out plus verify plus re-synthesis, so a few seconds
+# of remaining budget is not enough to do anything useful before being cut off
+# mid-iteration. Deliberately NOT an exact `== 0.0` check: a small positive
+# remainder (e.g. 3s) must not be treated as "plenty of time" and start a
+# multi-minute loop anyway.
+_MIN_REFINEMENT_BUDGET_S = 30.0
+
 
 def _provider_reason(provider: Any) -> str | None:
     """The ``reason`` a null provider carries (why its layer is inactive), or None."""
@@ -111,6 +129,25 @@ async def _isolate(
         )
     err = f"{name}: {out.error}" if out.error else None
     return out, err
+
+
+async def _bounded_await(coro: Any, *, remaining: float | None) -> Any:
+    """Await ``coro`` bounded by ``remaining`` seconds (``None`` = unbounded).
+
+    Raises ``asyncio.TimeoutError`` (never anything else on the budget path) when
+    the budget is either already exhausted (``remaining <= 0`` — the coroutine is
+    closed WITHOUT ever being awaited, so no half-started background work and no
+    "coroutine was never awaited" warning) or is exceeded mid-flight. Callers
+    fold this into their existing ``except Exception`` isolation by catching
+    ``asyncio.TimeoutError`` first with their own pipeline-errors message — this
+    is the shared enforcement point for every post-first-pass phase (synthesis,
+    verification, recovery, refinement) that previously ran unbounded once the
+    first pass had spent most or all of a configured ``time_budget_s``.
+    """
+    if remaining is not None and remaining <= 0:
+        coro.close()
+        raise asyncio.TimeoutError("no remaining time budget")
+    return await asyncio.wait_for(coro, timeout=remaining)
 
 
 async def _run_community(
@@ -220,13 +257,18 @@ async def run_research(
     report is written under ``output_dir`` (defaults to ``settings.output_dir``).
 
     ``time_budget_s`` (falls back to ``settings.time_budget_s``, default ``None``
-    = unbounded) is a global wall-clock budget for the whole run. When set, every
-    first-pass layer (research, grounding, deep-research, community) is bounded
-    to whatever time remains: a layer that would exceed it is cancelled, recorded
-    as a ``pipeline_errors`` entry with its ``duration_ms`` populated, and the run
-    degrades gracefully — it never comes back with zero output just because one
-    layer ran long. The refinement phase is skipped (with a pipeline-errors note)
-    once the budget is already exhausted by the time it would start.
+    = unbounded) is a global wall-clock budget for the whole run. When set, the
+    first pass (research, grounding, deep-research, community) gets only
+    ``_FIRST_PASS_BUDGET_FRACTION`` (80%) of whatever's remaining — a layer that
+    would exceed its slice is cancelled, recorded as a ``pipeline_errors`` entry
+    with its ``duration_ms`` populated, and the run degrades gracefully. The
+    reserved 20% tail, plus every phase that follows (synthesis, verification,
+    recovery), is itself bounded by the actual remaining budget at that point,
+    so none of those phases can be squeezed to nothing (or SIGKILLed with no
+    report) just because the first pass used most of the budget. The refinement
+    loop is skipped outright below a small floor of remaining time, and bounded
+    for its own duration once started, rather than running unbounded to
+    completion.
     """
     started = time.perf_counter()
     settings = settings or Settings.from_env()
@@ -256,7 +298,15 @@ async def run_research(
     # Every first-pass layer shares the SAME remaining-budget snapshot, taken
     # once here (not re-read per layer) — they run concurrently, so this bounds
     # the whole first-pass phase to one slice rather than compounding waits.
-    first_pass_budget = _remaining()
+    # Only _FIRST_PASS_BUDGET_FRACTION of it is handed out; the rest is a
+    # reserved tail for synthesis/verification/recovery/refinement-shutdown,
+    # which run strictly after and must not be squeezed to nothing.
+    _remaining_at_first_pass = _remaining()
+    first_pass_budget = (
+        _remaining_at_first_pass * _FIRST_PASS_BUDGET_FRACTION
+        if _remaining_at_first_pass is not None
+        else None
+    )
 
     layer_coros: dict[str, Any] = {}
     if _enabled("research"):
@@ -384,9 +434,14 @@ async def run_research(
     synthesis_md = ""
     synth_cost = 0.0
     try:
-        synthesis_md, synth_cost = await providers.synthesizer.synthesize(
-            topic, layers, style_constraints=settings.style_constraints
+        synthesis_md, synth_cost = await _bounded_await(
+            providers.synthesizer.synthesize(
+                topic, layers, style_constraints=settings.style_constraints
+            ),
+            remaining=_remaining(),
         )
+    except asyncio.TimeoutError:
+        pipeline_errors.append("synthesis: cancelled — exceeded remaining time budget")
     except Exception as exc:  # noqa: BLE001
         pipeline_errors.append(f"synthesis: {exc}")
     if not synthesis_md.strip():
@@ -464,11 +519,16 @@ async def run_research(
     vbudget = verify_budget if verify_budget is not None else profile.verify_budget_usd
     if verify and claims:
         try:
-            verification = await providers.verifier.verify(
-                claims,
-                budget_usd=vbudget,
-                max_concurrency=profile.verify_concurrency,
+            verification = await _bounded_await(
+                providers.verifier.verify(
+                    claims,
+                    budget_usd=vbudget,
+                    max_concurrency=profile.verify_concurrency,
+                ),
+                remaining=_remaining(),
             )
+        except asyncio.TimeoutError:
+            pipeline_errors.append("verification: cancelled — exceeded remaining time budget")
         except Exception as exc:  # noqa: BLE001
             pipeline_errors.append(f"verification: {exc}")
     if verification is not None and verification.total_citations == 0:
@@ -481,7 +541,13 @@ async def run_research(
     if recovery and verification is not None and should_recover(verification, settings):
         recovery_start = time.perf_counter()
         try:
-            recovered = await recovery_recover(topic, verification, claims, settings=settings)
+            recovered = await _bounded_await(
+                recovery_recover(topic, verification, claims, settings=settings),
+                remaining=_remaining(),
+            )
+        except asyncio.TimeoutError:
+            recovered = []
+            pipeline_errors.append("recovery_pass: cancelled — exceeded remaining time budget")
         except Exception as exc:  # noqa: BLE001
             recovered = []
             pipeline_errors.append(f"recovery_pass: {exc}")
@@ -497,12 +563,19 @@ async def run_research(
             fresh_rec_claims = _add_claims(rec_claims)
             if fresh_rec_claims and verify:
                 try:
-                    rec_ver = await providers.verifier.verify(
-                        fresh_rec_claims,
-                        budget_usd=min(1.0, vbudget),
-                        max_concurrency=max(4, profile.verify_concurrency // 2),
+                    rec_ver = await _bounded_await(
+                        providers.verifier.verify(
+                            fresh_rec_claims,
+                            budget_usd=min(1.0, vbudget),
+                            max_concurrency=max(4, profile.verify_concurrency // 2),
+                        ),
+                        remaining=_remaining(),
                     )
                     verification = merge_reports(verification, rec_ver)
+                except asyncio.TimeoutError:
+                    pipeline_errors.append(
+                        "recovery_verify: cancelled — exceeded remaining time budget"
+                    )
                 except Exception as exc:  # noqa: BLE001
                     pipeline_errors.append(f"recovery_verify: {exc}")
             pipeline_errors.append(
@@ -525,13 +598,19 @@ async def run_research(
         refine_profile = replace(profile, max_refinement_iterations=max(0, max_iterations))
     traces: list[Any] = []
     refinement_budget = _remaining()
-    if refine_profile.max_refinement_iterations > 0 and refinement_budget == 0.0:
-        # The budget was already spent by first pass + verification + recovery.
-        # Skip the loop rather than starting iterations doomed to blow the
-        # remaining (zero) time — the report still gets whatever the first pass
-        # produced instead of a hard timeout with nothing.
+    if refine_profile.max_refinement_iterations > 0 and (
+        refinement_budget is not None and refinement_budget < _MIN_REFINEMENT_BUDGET_S
+    ):
+        # The budget is already spent (or nearly so) by first pass +
+        # verification + recovery. Skip the loop rather than starting
+        # iterations doomed to be cut off mid-flight — the report still gets
+        # whatever the first pass produced instead of a hard timeout with
+        # nothing. This is a FLOOR, not an exact-zero check: a small positive
+        # remainder is not "plenty of time" for a coverage-evaluator call plus
+        # a research/grounding fan-out plus verify plus re-synthesis.
         pipeline_errors.append(
-            "refinement: skipped — no remaining time budget after first pass/verification"
+            "refinement: skipped — insufficient remaining time budget "
+            f"({refinement_budget:.0f}s < {_MIN_REFINEMENT_BUDGET_S:.0f}s floor)"
         )
     elif refine_profile.max_refinement_iterations > 0:
         seen_urls = {_canonical_url(s.url) for lyr in layers for s in lyr.results if s.url}
@@ -545,8 +624,20 @@ async def run_research(
             pipeline_errors=[],
         )
         try:
-            traces = await run_refinement(
-                topic, state, providers, refine_profile, settings=settings
+            # Bounded so a loop that's already running can't outlive the
+            # budget either — the loop's own guards (max iterations, cost
+            # ceiling) don't know about wall-clock time, so this is the
+            # enforcement point. ``state`` reflects whatever iterations fully
+            # completed before cancellation; a mid-iteration cancel leaves it
+            # internally consistent (no half-applied assignment), just short
+            # of one more round.
+            traces = await _bounded_await(
+                run_refinement(topic, state, providers, refine_profile, settings=settings),
+                remaining=refinement_budget,
+            )
+        except asyncio.TimeoutError:
+            pipeline_errors.append(
+                "refinement: cancelled mid-loop — exceeded remaining time budget"
             )
         except Exception as exc:  # noqa: BLE001
             pipeline_errors.append(f"refinement: {exc}")

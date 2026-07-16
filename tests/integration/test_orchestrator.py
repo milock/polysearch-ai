@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from polysearch import orchestrator as orchestrator_module
 from polysearch.config import Settings
 from polysearch.orchestrator import run_research
 from polysearch.output.schema import LayerOutput, SourceResult, VerificationReport
@@ -612,3 +613,211 @@ async def test_refinement_skipped_when_budget_exhausted(tmp_output_dir, monkeypa
     )
     # Still writes a real report despite the exhausted budget.
     assert list(tmp_output_dir.glob("*.md"))
+
+
+# ── review fix: bound the post-first-pass tail (Important #1) ──────────────
+
+
+class _SlowSynth:
+    """Sleeps well past a tight tail budget before returning a normal result."""
+
+    def __init__(self, sleep_s: float = 0.5):
+        self._sleep_s = sleep_s
+
+    async def synthesize(self, topic, layers, *, style_constraints):
+        await asyncio.sleep(self._sleep_s)
+        return "## Synthesis\n\nnever arrives in time", 0.0
+
+
+class _SlowVerifier:
+    """Sleeps well past a tight tail budget before returning a normal result."""
+
+    def __init__(self, sleep_s: float = 0.5):
+        self._sleep_s = sleep_s
+
+    async def verify(self, claims, *, budget_usd, max_concurrency):
+        await asyncio.sleep(self._sleep_s)
+        return _empty_verification()
+
+
+async def test_first_pass_leaves_a_tail_slice_for_synthesis(tmp_output_dir):
+    # research is bounded to _FIRST_PASS_BUDGET_FRACTION (80%) of the remaining
+    # budget, not the full 100% — so even a first-pass layer that consumes its
+    # ENTIRE slice must leave a real tail for synthesis to run in, rather than
+    # squeezing it into just the harness's outer slack. Generous absolute
+    # margins (1s budget -> ~200ms reserved tail vs a near-instant synth call)
+    # so this isn't sensitive to scheduling jitter under a loaded test run.
+    report = await run_research(
+        "grid battery storage economics",
+        depth="quick",
+        settings=Settings(),
+        providers=_providers(research=_SlowResearch(sleep_s=5.0), synthesizer=_FakeSynth()),
+        time_budget_s=1.0,
+        output_dir=tmp_output_dir,
+    )
+    # research was cancelled at ~80% of 1.0s (~0.8s), well short of its 5s sleep.
+    research_layer = next(lyr for lyr in report.layers if lyr.layer == "research")
+    assert research_layer.error is not None
+    # Synthesis still ran successfully in the reserved ~20% (~200ms) tail.
+    assert "42%" in report.synthesis_md
+    assert not any(e.startswith("synthesis:") for e in report.pipeline_errors)
+    assert list(tmp_output_dir.glob("*.md"))
+
+
+async def test_synthesis_cancelled_at_budget_still_writes_partial_report(tmp_output_dir):
+    report = await run_research(
+        "grid battery storage economics",
+        depth="quick",
+        settings=Settings(),
+        providers=_providers(synthesizer=_SlowSynth(sleep_s=2.0)),
+        time_budget_s=0.1,
+        output_dir=tmp_output_dir,
+    )
+    assert any(
+        e.startswith("synthesis:") and "exceeded remaining time budget" in e
+        for e in report.pipeline_errors
+    )
+    assert report.synthesis_md == ""
+    # Report still written (as a degraded/placeholder report), never nothing.
+    assert list(tmp_output_dir.glob("*.md"))
+    assert list(tmp_output_dir.glob("*.json"))
+
+
+async def test_verification_cancelled_at_budget_records_error(tmp_output_dir):
+    report = await run_research(
+        "grid battery storage economics",
+        depth="quick",
+        settings=Settings(),
+        providers=_providers(verifier=_SlowVerifier(sleep_s=2.0)),
+        time_budget_s=0.1,
+        output_dir=tmp_output_dir,
+    )
+    assert any(
+        e.startswith("verification:") and "exceeded remaining time budget" in e
+        for e in report.pipeline_errors
+    )
+    assert report.verification is None
+    assert list(tmp_output_dir.glob("*.md"))
+
+
+async def test_recovery_pass_cancelled_at_budget_records_error(tmp_output_dir, monkeypatch):
+    # A weak first-pass verification triggers recovery; make the recovery call
+    # itself slow so the tail-budget bound around it is what stops it.
+    async def _slow_recover(topic, verification, claims, *, settings):
+        await asyncio.sleep(2.0)
+        return []
+
+    monkeypatch.setattr(orchestrator_module, "recovery_recover", _slow_recover)
+    monkeypatch.setattr(orchestrator_module, "should_recover", lambda *a, **k: True)
+
+    report = await run_research(
+        "grid battery storage economics",
+        depth="quick",
+        settings=Settings(),
+        providers=_providers(),
+        time_budget_s=0.1,
+        output_dir=tmp_output_dir,
+    )
+    assert any(
+        e.startswith("recovery_pass:") and "exceeded remaining time budget" in e
+        for e in report.pipeline_errors
+    )
+    assert list(tmp_output_dir.glob("*.md"))
+
+
+async def test_whole_run_writes_report_before_a_tight_budget_expires(tmp_output_dir):
+    # The end-to-end invariant the review asked for: even when the first pass
+    # consumes its FULL slice AND every phase after it is individually slow,
+    # the run still writes a real report well before the tight budget would
+    # let a harness SIGKILL it with nothing.
+    report = await run_research(
+        "grid battery storage economics",
+        depth="quick",
+        settings=Settings(),
+        providers=_providers(
+            research=_SlowResearch(sleep_s=5.0),
+            synthesizer=_SlowSynth(sleep_s=5.0),
+            verifier=_SlowVerifier(sleep_s=5.0),
+        ),
+        time_budget_s=1.0,
+        output_dir=tmp_output_dir,
+    )
+    assert list(tmp_output_dir.glob("*.md"))
+    assert list(tmp_output_dir.glob("*.json"))
+    # Finished in well under the sum of the sleeps (15s) — each phase was cut
+    # at its own remaining-budget slice instead of running to completion.
+    assert report.totals["duration_sec"] < 3.0
+
+
+# ── review fix: refinement floor + bounded loop duration (Important #2) ────
+
+
+async def test_refinement_skipped_below_floor_even_with_small_positive_remainder(
+    tmp_output_dir,
+):
+    # 0.5s budget; a research layer sleeping 0.1s (well within its ~0.4s
+    # first-pass slice) leaves several hundred ms remaining at the refinement
+    # check — small (well under the 30s floor) and clearly POSITIVE, never
+    # exactly 0.0. The old `== 0.0` check would have let this through as
+    # "there's still budget, proceed" and started an unbounded multi-iteration
+    # loop; the floor check must skip it instead.
+    report = await run_research(
+        "grid battery storage economics",
+        depth="standard",
+        settings=Settings(),
+        providers=_providers(research=_SlowResearch(sleep_s=0.1)),
+        time_budget_s=0.5,
+        output_dir=tmp_output_dir,
+    )
+    assert report.refinement_iterations == []
+    assert any(
+        "refinement" in e and "skipped" in e and "insufficient remaining time budget" in e
+        for e in report.pipeline_errors
+    )
+
+
+class _FirstFastThenSlowResearch:
+    """First call (the first pass) returns immediately; every later call (a
+    refinement follow-up) sleeps well past the tiny budget left for the loop."""
+
+    name = "research"
+
+    def __init__(self, *, slow_sleep_s: float):
+        self.calls = 0
+        self._slow_sleep_s = slow_sleep_s
+
+    async def research(self, topic, *, sub_questions, depth):
+        self.calls += 1
+        if self.calls == 1:
+            return LayerOutput(
+                layer="research",
+                results=[_src("https://example.test/first")],
+                answers=["The figure was 42% in 2026 per the cited source."],
+            )
+        await asyncio.sleep(self._slow_sleep_s)
+        return LayerOutput(layer="research", results=[_src(f"https://example.test/{self.calls}")])
+
+
+async def test_refinement_loop_bounded_once_started(tmp_output_dir, monkeypatch):
+    # Lower the floor so a small-but-real budget is enough to START the loop —
+    # proves the loop itself gets cancelled mid-flight rather than running to
+    # completion once it's past the entry check.
+    monkeypatch.setattr(orchestrator_module, "_MIN_REFINEMENT_BUDGET_S", 0.01)
+    monkeypatch.setattr("openai.AsyncOpenAI", _FakeOpenAI)
+    slow = _FirstFastThenSlowResearch(slow_sleep_s=2.0)
+
+    report = await run_research(
+        "grid battery storage economics",
+        depth="standard",
+        settings=Settings(openai_api_key="test-key"),
+        providers=_providers(research=slow),
+        time_budget_s=0.2,
+        output_dir=tmp_output_dir,
+    )
+
+    assert any(
+        "refinement" in e and "cancelled mid-loop" in e and "time budget" in e
+        for e in report.pipeline_errors
+    )
+    # Cut off near the ~0.2s budget, nowhere near the follow-up's full 2s sleep.
+    assert report.totals["duration_sec"] < 1.5
