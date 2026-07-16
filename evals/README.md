@@ -21,7 +21,7 @@ For every task the harness records two kinds of signal.
 | Citation pair rate (secondary) | `verified_ok / total_citations`, ungated — a diagnostic column, not a threshold |
 | Source-tier mix | fraction of unique sources that are HIGH or MEDIUM tier |
 | Dead-link count | citations marked `URL_DEAD` |
-| Key-fact coverage | fraction of the task's `key_facts` found in the report **markdown**, matched sentence-by-sentence with rapidfuzz `token_set_ratio` ≥ 70 so paraphrase is caught but scattered words are not |
+| Key-fact coverage | fraction of the task's `key_facts` found in the report **markdown**, matched against every 1-3 sentence window with rapidfuzz `token_set_ratio` ≥ 45 (see "Key-fact coverage calibration" below) so paraphrase spanning a sentence or two is caught but scattered words are not |
 | Refinement rounds | goal-driven refinement iterations that ran follow-up queries, vs. `expects_refinement` |
 | Placeholder leaks | unresolved `{{…}}` template tokens left in the report |
 | Cost / duration | from the report |
@@ -40,6 +40,31 @@ evaluates the end state, not the process). The judge schema never requests a URL
 field — models fabricate URLs when a schema invites one, so citation accuracy is
 judged from the source tags shown, and URL integrity is measured programmatically
 upstream.
+
+### Key-fact coverage calibration (task r3b)
+
+Round 2 showed key-fact coverage reading 0.000 across reports that visibly stated
+the facts — the ruler, not the pipeline, was broken. The original metric matched
+each fact against a single sentence with exact-token `token_set_ratio` ≥ 70; a
+hand-checked case (`comparison-postgres-mysql-oltp`, fact "concurrency and MVCC
+handling differences" against a report sentence that ties PostgreSQL's "handling
+of **concurrent** writes through **MVCC**" — a real match, just inflected and
+paraphrased differently) scored only 45. The fix normalizes both sides
+(markdown-noise stripped, suffix-stripped: `s`/`es`/`ies→y`/`ing`/`ed`/`tion(s)`),
+drops a small stopword set (`and`, `the`, `of`, `for`, `each`, `to`) from the
+*fact* side only so short facts aren't dominated by connective words, and matches
+against every 1-3 sentence window instead of one sentence in isolation. Calibrating
+against hand-checked real and synthetic cases moved `KEY_FACT_MATCH_THRESHOLD`
+from 70 to 45: genuinely-covered facts (including the morphological-variant case
+above) land in the 50s-70s once normalized, genuinely-absent facts land in the
+20s-40s, with clear margin between the two — see the calibration tests in
+`tests/unit/test_eval_harness.py`. Two of the worst abstract `key_facts` phrasings
+in `tasks.yaml` (`"replication and high-availability options for each"`,
+`"typical workloads each is better suited to"`) were also rephrased into
+concrete, noun-heavy wording a real report would actually state, independent of
+the metric fix. r1 and r1-rescored have no surviving per-task report artifacts in
+this repo (only aggregate scoreboards and a diagnosis doc), so they could not be
+rescored under the new metric — only r2 and its four sub-sweeps were.
 
 ## Running
 
