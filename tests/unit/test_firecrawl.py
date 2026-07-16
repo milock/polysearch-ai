@@ -425,6 +425,44 @@ async def test_ground_backfills_snippet_from_markdown_when_discovery_snippet_emp
     assert preserved.snippet == "discovery snippet here"
 
 
+async def test_ground_widens_backfill_for_authoritative_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HIGH/MEDIUM scraped pages with no discovery snippet backfill up to the
+    configured wide budget (facts live beyond the 600-char base); lower tiers stay
+    capped at the base."""
+    _patch_perplexity_discovery(
+        monkeypatch,
+        [
+            {"url": "https://www.federalreserve.gov/fomc", "title": "FOMC", "description": ""},
+            {"url": "https://randomblog.example.org/post", "title": "Blog", "description": ""},
+        ],
+    )
+    long_md = "word " * 400  # ~2000 chars
+    app = _FakeFirecrawlApp(
+        api_key="x",
+        scrape_data_by_url={
+            "https://www.federalreserve.gov/fomc": {
+                "markdown": long_md,
+                "metadata": {"published_date": "2026-06-17"},
+            },
+            "https://randomblog.example.org/post": {
+                "markdown": long_md,
+                "metadata": {"published_date": "2026-06-17"},
+            },
+        },
+    )
+    _install_fake_firecrawl(monkeypatch, app)
+
+    grounder = fc.FirecrawlGrounder(_settings(synthesis_excerpt_chars=1200))
+    layer = await grounder.ground("rates", limit=2, scrape_top_k=2)
+    by_url = {r.url: r for r in layer.results}
+
+    # HIGH tier (federalreserve.gov) -> widened to 1200; UNKNOWN blog -> base 600.
+    assert len(by_url["https://www.federalreserve.gov/fomc"].snippet) == 1200
+    assert len(by_url["https://randomblog.example.org/post"].snippet) == 600
+
+
 async def test_ground_surfaces_discovery_error_without_crashing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

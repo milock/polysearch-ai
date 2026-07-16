@@ -151,20 +151,25 @@ def _looks_paywalled(markdown: str) -> bool:
     return any(marker in lowered for marker in _PAYWALL_MARKERS)
 
 
-# Synthesis consumes exactly ``snippet or markdown[:600]`` per source; mirror that
-# here so a scraped result with a thin/empty discovery snippet still carries the
-# scraped content that synthesis reads.
+# Per-source snippet backfill budgets (chars). A scraped result with a thin/empty
+# discovery snippet backfills from the scraped markdown so synthesis still sees the
+# page content. Authoritative pages (HIGH/MEDIUM) get a wider budget because the
+# figures a good report must state often live beyond the first 600 chars; lower
+# tiers stay at the base.
 _SNIPPET_CHARS = 600
+_DEFAULT_HI_SNIPPET_CHARS = 1200
+_WIDE_SNIPPET_TIERS = frozenset({"HIGH", "MEDIUM"})
 
 
-def _snippet_for(item: GroundedItem) -> str:
+def _snippet_for(item: GroundedItem, *, hi_budget: int = _DEFAULT_HI_SNIPPET_CHARS) -> str:
     """Public-parity snippet: keep a non-empty discovery snippet; otherwise
-    backfill from the first ~600 chars of scraped markdown (whitespace runs
-    collapsed)."""
+    backfill from the scraped markdown (whitespace runs collapsed), capped at the
+    tier's budget — ``hi_budget`` for HIGH/MEDIUM, the 600-char base otherwise."""
     if item.snippet and item.snippet.strip():
         return item.snippet
     collapsed = re.sub(r"\s+", " ", item.markdown or "").strip()
-    return collapsed[:_SNIPPET_CHARS]
+    cap = hi_budget if item.tier in _WIDE_SNIPPET_TIERS else _SNIPPET_CHARS
+    return collapsed[:cap]
 
 
 def _as_dict(obj: Any) -> dict[str, Any]:
@@ -267,7 +272,7 @@ class FirecrawlGrounder:
             SourceResult(
                 url=it.url,
                 title=it.title,
-                snippet=_snippet_for(it),
+                snippet=_snippet_for(it, hi_budget=self.settings.synthesis_excerpt_chars),
                 tier=it.tier,
                 published_date=it.published_date,
                 layer="grounding",
