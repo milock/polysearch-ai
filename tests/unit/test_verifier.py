@@ -460,6 +460,72 @@ async def test_shared_url_budget_caps_unique_scrapes(
     assert report.skipped_budget == 2
 
 
+async def test_score_phase_embedding_calls_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The score phase makes a per-pair OpenAI embedding call on borderline
+    quotes. Dedup collapses scrapes to one, but the pair count stays
+    O(claims × sources) — so scoring must run under the max_concurrency bound or a
+    large pair count would burst the embedding calls into a 429 storm. Drive every
+    pair through the embedding fallback and assert concurrent embedding calls never
+    exceed the bound (and that concurrency is actually exercised)."""
+    import asyncio as _asyncio
+
+    from polysearch.verification import verifier as V
+
+    url = "https://cms.gov/shared"
+    app = _FakeApp(
+        api_key="x",
+        responses={
+            url: {
+                "success": True,
+                "markdown": "page content",
+                "metadata": {"published_date": "2026-01-01"},
+            }
+        },
+    )
+    _install_fake_app(monkeypatch, app)
+    # A key makes verify() construct a (real, but unused — _embed_cosine_max is
+    # stubbed) AsyncOpenAI client, so the fallback branch is reachable.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    # Force every quote to score in the borderline [0.70, 0.85) band so the
+    # embedding fallback always fires.
+    monkeypatch.setattr(V, "_match_quote", lambda q, md, thr: (False, 0.75, "x"))
+
+    concurrent = 0
+    max_seen = 0
+
+    async def _fake_embed(client: Any, quote: str, markdown: str, model: str) -> None:
+        nonlocal concurrent, max_seen
+        concurrent += 1
+        max_seen = max(max_seen, concurrent)
+        await _asyncio.sleep(0.01)
+        concurrent -= 1
+        return None  # no cosine rescue → pair stays a quote mismatch
+
+    monkeypatch.setattr(V, "_embed_cosine_max", _fake_embed)
+
+    # 30 claims all citing the same URL → 30 pairs, 1 scrape, 30 embedding calls.
+    claims = [
+        Claim(
+            text=f"claim {i}",
+            source_urls=[url],
+            quotes=["a borderline quote"],
+            claim_id=f"cemb{i}",
+        )
+        for i in range(30)
+    ]
+    report = await verify(claims, budget_usd=1.0, max_concurrency=4)
+
+    assert report.total_citations == 30
+    assert len(app.scrape_calls) == 1  # dedup still holds
+    # The bound under test: never more than max_concurrency embedding calls at once.
+    assert max_seen <= 4
+    # And concurrency was genuinely exercised (not accidentally serialized).
+    assert max_seen > 1
+
+
 # -----------------------------------------------------------------------------
 # BLOCKED tier (hard-exclude)
 # -----------------------------------------------------------------------------
