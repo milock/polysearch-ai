@@ -51,9 +51,9 @@ tasks:
     category: COMPARISON
     key_facts:
       - concurrency and MVCC handling differences
-      - replication and high-availability options for each
+      - "replication and high availability: streaming replication, group replication, failover"
       - indexing and query-planner differences
-      - typical workloads each is better suited to
+      - "workload fit: read-heavy, write-heavy, and high-concurrency OLTP patterns"
     expects_refinement: true
 
   - id: comparison-react-svelte
