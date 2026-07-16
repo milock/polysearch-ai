@@ -232,8 +232,19 @@ def _tier_mix(norm: NormalizedReport) -> tuple[float | None, int]:
     return trusted / total, total
 
 
+# A markdown heading ("### High (primary, peer-reviewed, official) (22)") is
+# document structure, not stated content — a source-tier bucket label like
+# "High" or "Low" can share vocabulary with an unrelated fact ("high
+# availability") purely by coincidence. Excluded from the fact-matching pool.
+_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s")
+
+
 def _sentence_units(text: str) -> list[str]:
-    return [u.strip().lower() for u in _SENTENCE_SPLIT_RE.split(text) if u.strip()]
+    return [
+        u.strip().lower()
+        for u in _SENTENCE_SPLIT_RE.split(text)
+        if u.strip() and not _MARKDOWN_HEADING_RE.match(u.strip())
+    ]
 
 
 def _key_fact_coverage(

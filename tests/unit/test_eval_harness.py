@@ -877,6 +877,22 @@ def test_real_artifact_postgres_mysql_facts_1_and_4_pass() -> None:
     assert fact_4_covered == 1
 
 
+def test_source_tier_heading_does_not_false_positive_on_availability_fact() -> None:
+    """Regression: the report's own '### High (primary, peer-reviewed, official)
+    (22)' bibliography-tier heading shares the word 'high' with a fact about
+    'high availability' and scored a false-positive 45.28 (>= the calibrated
+    threshold) before markdown headings were excluded from the fact-matching
+    pool. Headings are structure, not stated content, and must never carry a
+    fact regardless of the tier-name vocabulary they happen to contain."""
+    text = _PG_MYSQL_REPORT.read_text()
+    fact = (
+        "replication and high availability: streaming replication, "
+        "group replication, failover"
+    )
+    cov, covered, _ = metrics._key_fact_coverage([fact], text)
+    assert covered == 0
+
+
 def test_real_artifact_postgres_mysql_genuinely_missing_fact_still_fails() -> None:
     """Fact 2 (replication / HA) is not substantively answered in this
     report's synthesis — it only appears as a follow-up *query* the pipeline
