@@ -74,38 +74,82 @@ def _linkedin_url_in(topic: str) -> str | None:
     return m.group(0) if m else None
 
 
-async def _isolate(name: str, awaitable: Any) -> tuple[LayerOutput, str | None]:
+async def _isolate(
+    name: str, awaitable: Any, *, budget: float | None = None
+) -> tuple[LayerOutput, str | None]:
     """Await a layer coroutine, converting a raise into an empty errored layer.
 
+    ``budget`` (seconds, ``None`` = unbounded) bounds how long the layer is
+    allowed to run; a layer that would exceed it is cancelled rather than left to
+    run unbounded — this is the wall-clock-budget enforcement point every
+    first-pass layer goes through. ``asyncio.wait_for`` with ``timeout=None``
+    behaves exactly like a plain ``await``, so passing ``budget=None`` (the
+    default, "no time budget configured") is a no-op and preserves prior
+    behavior exactly.
+
     Returns ``(layer, pipeline_error)``: the layer output (empty on failure) plus
-    a pipeline-error string when the layer raised OR came back carrying an
-    ``error`` (a null provider's reason, a structured provider failure).
+    a pipeline-error string when the layer raised, timed out, OR came back
+    carrying an ``error`` (a null provider's reason, a structured provider
+    failure). ``duration_ms`` is populated on every path, including timeout and
+    generic-exception failures, so a layer's wall-clock is always visible.
     """
+    start = time.perf_counter()
     try:
-        out = await awaitable
+        out = await asyncio.wait_for(awaitable, timeout=budget)
+    except asyncio.TimeoutError:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        msg = f"cancelled: exceeded remaining time budget ({budget:.0f}s)"
+        return (
+            LayerOutput(layer=name, error=msg, duration_ms=duration_ms),
+            f"{name}: {msg}",
+        )
     except Exception as exc:  # noqa: BLE001 — one layer must never sink the run
-        return LayerOutput(layer=name, error=f"{type(exc).__name__}: {exc}"), f"{name}: {exc}"
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return (
+            LayerOutput(layer=name, error=f"{type(exc).__name__}: {exc}", duration_ms=duration_ms),
+            f"{name}: {exc}",
+        )
     err = f"{name}: {out.error}" if out.error else None
     return out, err
 
 
 async def _run_community(
-    sources: list[Any], topic: str, *, window_days: int, limit: int
+    sources: list[Any],
+    topic: str,
+    *,
+    window_days: int,
+    limit: int,
+    adapter_timeout: float | None = None,
 ) -> tuple[LayerOutput, list[str]]:
     """Search every community source in parallel, fuse, and relevance-gate.
 
     Each adapter is failure-isolated (they set ``last_error`` and return ``[]``
-    rather than raise); its ``last_error`` is surfaced as a pipeline note. The
-    fused, tier-COMMUNITY results pass through the relevance gate, which suppresses
-    the whole layer with a note when more than 70% of items are off-topic.
+    rather than raise); its ``last_error`` is surfaced as a pipeline note.
+    ``adapter_timeout`` (seconds, ``None`` = unbounded) additionally bounds each
+    adapter's ``search()`` call directly — a source stuck in retries/backoff
+    (Reddit's OAuth->public->ScrapeCreators fallback chain, a rate-limiter 429
+    backoff of up to 300s) is cancelled rather than stalling every sibling and the
+    whole fused layer; fusion proceeds with whatever the other sources returned.
+    The fused, tier-COMMUNITY results pass through the relevance gate, which
+    suppresses the whole layer with a note when more than 70% of items are
+    off-topic.
     """
-    tasks = [src.search(topic, window_days=window_days, limit=limit) for src in sources]
+    start = time.perf_counter()
+
+    async def _bounded(src: Any) -> list[SourceResult]:
+        coro = src.search(topic, window_days=window_days, limit=limit)
+        return await asyncio.wait_for(coro, timeout=adapter_timeout)
+
+    tasks = [_bounded(src) for src in sources]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     errors: list[str] = []
     per_source: list[list[SourceResult]] = []
     for src, res in zip(sources, results, strict=True):
         name = getattr(src, "name", "?")
+        if isinstance(res, asyncio.TimeoutError):
+            errors.append(f"community/{name}: timed out after {adapter_timeout:.0f}s")
+            continue
         if isinstance(res, BaseException):
             errors.append(f"community/{name}: {type(res).__name__}: {res}")
             continue
@@ -118,7 +162,8 @@ async def _run_community(
     outcome = evaluate_community(fused, topic)
     if outcome.suppressed and outcome.note:
         errors.append(f"community: {outcome.note}")
-    return LayerOutput(layer="community", results=outcome.results), errors
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    return LayerOutput(layer="community", results=outcome.results, duration_ms=duration_ms), errors
 
 
 def _recovered_material(recovered: list[Any]) -> tuple[list[SourceResult], list[Claim]]:
@@ -159,6 +204,7 @@ async def run_research(
     max_iterations: int | None = None,
     output_dir: Path | str | None = None,
     write: bool = True,
+    time_budget_s: float | None = None,
 ) -> PipelineReport:
     """Run the full research pipeline for ``topic`` and return its report.
 
@@ -172,11 +218,28 @@ async def run_research(
     ``max_iterations`` overrides the profile's refinement cap (0 disables it).
     ``person_hook`` is the optional PERSON-context seam. When ``write`` is set the
     report is written under ``output_dir`` (defaults to ``settings.output_dir``).
+
+    ``time_budget_s`` (falls back to ``settings.time_budget_s``, default ``None``
+    = unbounded) is a global wall-clock budget for the whole run. When set, every
+    first-pass layer (research, grounding, deep-research, community) is bounded
+    to whatever time remains: a layer that would exceed it is cancelled, recorded
+    as a ``pipeline_errors`` entry with its ``duration_ms`` populated, and the run
+    degrades gracefully — it never comes back with zero output just because one
+    layer ran long. The refinement phase is skipped (with a pipeline-errors note)
+    once the budget is already exhausted by the time it would start.
     """
     started = time.perf_counter()
     settings = settings or Settings.from_env()
     if providers is None:
         providers = build_providers(settings)
+
+    budget_s = time_budget_s if time_budget_s is not None else settings.time_budget_s
+    deadline = (started + budget_s) if budget_s is not None else None
+
+    def _remaining() -> float | None:
+        if deadline is None:
+            return None
+        return max(0.0, deadline - time.perf_counter())
 
     classification = classify(topic)
     if depth not in DEPTH_PROFILES:
@@ -190,6 +253,11 @@ async def run_research(
         return enabled_layers is None or name in enabled_layers
 
     # ── Parallel first pass ──────────────────────────────────────────────────
+    # Every first-pass layer shares the SAME remaining-budget snapshot, taken
+    # once here (not re-read per layer) — they run concurrently, so this bounds
+    # the whole first-pass phase to one slice rather than compounding waits.
+    first_pass_budget = _remaining()
+
     layer_coros: dict[str, Any] = {}
     if _enabled("research"):
         layer_coros["research"] = _isolate(
@@ -197,6 +265,7 @@ async def run_research(
             providers.research.research(
                 topic, sub_questions=profile.perplexity_sub_questions, depth=depth
             ),
+            budget=first_pass_budget,
         )
     if _enabled("grounding"):
         # The grounder's ``ground`` protocol carries no recency parameter and the
@@ -210,6 +279,7 @@ async def run_research(
                 limit=profile.firecrawl_limit,
                 scrape_top_k=profile.firecrawl_scrape_top_k,
             ),
+            budget=first_pass_budget,
         )
     deep_should_run = (
         providers.deep_research is not None
@@ -220,18 +290,31 @@ async def run_research(
         layer_coros["deep_research"] = _isolate(
             "deep_research",
             providers.deep_research.research(
-                topic, sub_questions=profile.perplexity_sub_questions, depth=depth
+                topic,
+                sub_questions=profile.perplexity_sub_questions,
+                depth=depth,
+                time_budget_s=first_pass_budget,
             ),
+            budget=first_pass_budget,
         )
 
     community_task: asyncio.Task | None = None
     if _enabled("community") and providers.community_sources:
+        # Per-adapter timeout is always applied (config default ~60s) regardless
+        # of whether a global time_budget_s is set — a blocked adapter (Reddit's
+        # fallback chain, a 429 backoff) must never stall the fused layer. When a
+        # global budget IS set and leaves less time than that default, the
+        # smaller of the two wins.
+        adapter_timeout = settings.community_adapter_timeout_s
+        if first_pass_budget is not None:
+            adapter_timeout = max(0.0, min(adapter_timeout, first_pass_budget))
         community_task = asyncio.create_task(
             _run_community(
                 providers.community_sources,
                 topic,
                 window_days=_COMMUNITY_WINDOW_DAYS,
                 limit=profile.community_limit,
+                adapter_timeout=adapter_timeout,
             )
         )
 
@@ -244,7 +327,20 @@ async def run_research(
             pipeline_errors.append(err)
 
     if community_task is not None:
-        community_layer, community_errors = await community_task
+        # A second, outer budget check: the per-adapter timeout already bounds
+        # the community task closely, but this is the same safety net every
+        # other first-pass layer gets, using the budget remaining right now.
+        community_budget = _remaining()
+        community_start = time.perf_counter()
+        try:
+            community_layer, community_errors = await asyncio.wait_for(
+                community_task, timeout=community_budget
+            )
+        except asyncio.TimeoutError:
+            duration_ms = int((time.perf_counter() - community_start) * 1000)
+            msg = f"cancelled: exceeded remaining time budget ({community_budget:.0f}s)"
+            community_layer = LayerOutput(layer="community", error=msg, duration_ms=duration_ms)
+            community_errors = [f"community: {msg}"]
         layers.append(community_layer)
         pipeline_errors.extend(community_errors)
 
@@ -254,25 +350,29 @@ async def run_research(
     # ── PERSON enrichment (person-context hook + LinkedIn) ───────────────────
     if classification.query_type == "PERSON":
         if person_hook is not None:
+            hook_start = time.perf_counter()
             try:
                 pr = await person_hook.lookup(topic)
             except Exception as exc:  # noqa: BLE001
                 pr = None
                 pipeline_errors.append(f"person_hook: {exc}")
             if pr is not None:
-                layers.append(LayerOutput(layer="person-context", results=[pr]))
+                hook_ms = int((time.perf_counter() - hook_start) * 1000)
+                layers.append(LayerOutput(layer="person-context", results=[pr], duration_ms=hook_ms))
 
         linkedin = getattr(providers, "linkedin", None)
         if linkedin is not None and getattr(linkedin, "active", False) and _enabled("linkedin"):
             profile_url = _linkedin_url_in(topic)
             if profile_url:
+                li_start = time.perf_counter()
                 try:
                     sr = await linkedin.enrich(profile_url)
                 except Exception as exc:  # noqa: BLE001
                     sr = None
                     pipeline_errors.append(f"linkedin: {exc}")
                 if sr is not None:
-                    layers.append(LayerOutput(layer="linkedin", results=[sr]))
+                    li_ms = int((time.perf_counter() - li_start) * 1000)
+                    layers.append(LayerOutput(layer="linkedin", results=[sr], duration_ms=li_ms))
                 elif getattr(linkedin, "reason", None):
                     pipeline_errors.append(f"linkedin: {linkedin.reason}")
             else:
@@ -379,6 +479,7 @@ async def run_research(
     # ── Recovery pass (automated sonar-pro rescue) ───────────────────────────
     recovery_ran = False
     if recovery and verification is not None and should_recover(verification, settings):
+        recovery_start = time.perf_counter()
         try:
             recovered = await recovery_recover(topic, verification, claims, settings=settings)
         except Exception as exc:  # noqa: BLE001
@@ -389,7 +490,10 @@ async def run_research(
             ok_before = verification.verified_ok
             rec_sources, rec_claims = _recovered_material(recovered)
             if rec_sources:
-                layers.append(LayerOutput(layer="recovery", results=rec_sources))
+                recovery_ms = int((time.perf_counter() - recovery_start) * 1000)
+                layers.append(
+                    LayerOutput(layer="recovery", results=rec_sources, duration_ms=recovery_ms)
+                )
             fresh_rec_claims = _add_claims(rec_claims)
             if fresh_rec_claims and verify:
                 try:
@@ -420,7 +524,16 @@ async def run_research(
     if max_iterations is not None:
         refine_profile = replace(profile, max_refinement_iterations=max(0, max_iterations))
     traces: list[Any] = []
-    if refine_profile.max_refinement_iterations > 0:
+    refinement_budget = _remaining()
+    if refine_profile.max_refinement_iterations > 0 and refinement_budget == 0.0:
+        # The budget was already spent by first pass + verification + recovery.
+        # Skip the loop rather than starting iterations doomed to blow the
+        # remaining (zero) time — the report still gets whatever the first pass
+        # produced instead of a hard timeout with nothing.
+        pipeline_errors.append(
+            "refinement: skipped — no remaining time budget after first pass/verification"
+        )
+    elif refine_profile.max_refinement_iterations > 0:
         seen_urls = {_canonical_url(s.url) for lyr in layers for s in lyr.results if s.url}
         state = RefinementState(
             layers=layers,

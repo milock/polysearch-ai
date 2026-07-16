@@ -261,7 +261,12 @@ class DeepResearchProvider:
             self.reason = None
 
     async def research(
-        self, topic: str, *, sub_questions: int, depth: str
+        self,
+        topic: str,
+        *,
+        sub_questions: int,
+        depth: str,
+        time_budget_s: float | None = None,
     ) -> LayerOutput:
         # sonar-deep-research runs the whole topic as one long-form job — it does
         # its own internal decomposition, so ``sub_questions``/``depth`` are not
@@ -269,12 +274,25 @@ class DeepResearchProvider:
         if not self.active:
             return LayerOutput(layer=self.name, error=self.reason)
 
+        # A run-level wall-clock budget (the orchestrator's ``time_budget_s``)
+        # clamps the poll loop tighter than the configured
+        # ``deep_research_timeout_s`` when less time remains — a legitimately
+        # slow sonar-deep-research job must not be allowed to outlive the whole
+        # eval/run budget on its own. ``time_budget_s=None`` (no run budget
+        # configured) leaves the configured timeout untouched.
+        configured_timeout = float(self.settings.deep_research_timeout_s)
+        effective_timeout = (
+            configured_timeout
+            if time_budget_s is None
+            else max(0.0, min(configured_timeout, time_budget_s))
+        )
+
         start = time.perf_counter()
         result = await research(
             topic,
             api_key=self.settings.perplexity_api_key,
             model=self.settings.deep_research_model,
-            timeout=float(self.settings.deep_research_timeout_s),
+            timeout=effective_timeout,
         )
 
         sources: list[SourceResult] = []

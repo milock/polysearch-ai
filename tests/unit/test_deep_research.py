@@ -26,6 +26,7 @@ from polysearch.config import Settings
 from polysearch.output.schema import LayerOutput
 from polysearch.providers import deep_research as dr
 from polysearch.providers.base import ResearchProvider
+from polysearch.providers.perplexity import PerplexityResult
 
 SUBMIT_URL = "https://api.perplexity.ai/v1/async/sonar"
 
@@ -455,3 +456,92 @@ async def test_provider_surfaces_failed_status_as_layer_error():
     assert out.error is not None
     assert "overloaded" in out.error
     assert out.results == []
+
+
+# -----------------------------------------------------------------------------
+# DeepResearchProvider — time_budget_s clamps the poll timeout (task r3c)
+# -----------------------------------------------------------------------------
+
+
+async def test_time_budget_clamps_poll_timeout_below_configured(monkeypatch):
+    """A run-level time_budget_s smaller than deep_research_timeout_s (3600) must
+    win — a legitimately slow job can't outlive the whole run/eval budget."""
+    captured: dict = {}
+
+    async def _fake_research(topic, *, api_key, model, timeout):
+        captured["timeout"] = timeout
+        return PerplexityResult(
+            question=topic, answer="ok", citations=[], model=model,
+            search_results=[], tokens_input=0, tokens_output=0,
+            cost_usd=0.0, duration_ms=1, error=None,
+        )
+
+    monkeypatch.setattr(dr, "research", _fake_research)
+    provider = dr.DeepResearchProvider(_settings(deep_research_timeout_s=3600))
+
+    await provider.research("topic", sub_questions=1, depth="deep", time_budget_s=42.0)
+
+    assert captured["timeout"] == 42.0
+
+
+async def test_time_budget_larger_than_configured_timeout_does_not_widen_it(monkeypatch):
+    """A generous remaining budget must never let the poll run LONGER than the
+    configured deep_research_timeout_s — only the smaller of the two applies."""
+    captured: dict = {}
+
+    async def _fake_research(topic, *, api_key, model, timeout):
+        captured["timeout"] = timeout
+        return PerplexityResult(
+            question=topic, answer="ok", citations=[], model=model,
+            search_results=[], tokens_input=0, tokens_output=0,
+            cost_usd=0.0, duration_ms=1, error=None,
+        )
+
+    monkeypatch.setattr(dr, "research", _fake_research)
+    provider = dr.DeepResearchProvider(_settings(deep_research_timeout_s=3600))
+
+    await provider.research("topic", sub_questions=1, depth="deep", time_budget_s=999_999.0)
+
+    assert captured["timeout"] == 3600.0
+
+
+async def test_no_time_budget_uses_configured_timeout_unchanged(monkeypatch):
+    """time_budget_s omitted (the default) must behave exactly as before this
+    task — no regression for callers that never pass it."""
+    captured: dict = {}
+
+    async def _fake_research(topic, *, api_key, model, timeout):
+        captured["timeout"] = timeout
+        return PerplexityResult(
+            question=topic, answer="ok", citations=[], model=model,
+            search_results=[], tokens_input=0, tokens_output=0,
+            cost_usd=0.0, duration_ms=1, error=None,
+        )
+
+    monkeypatch.setattr(dr, "research", _fake_research)
+    provider = dr.DeepResearchProvider(_settings(deep_research_timeout_s=1200))
+
+    await provider.research("topic", sub_questions=1, depth="deep")
+
+    assert captured["timeout"] == 1200.0
+
+
+async def test_time_budget_of_zero_clamps_to_zero(monkeypatch):
+    """A fully exhausted budget (0.0s remaining) must not be widened back up to
+    the configured timeout — it should poll with essentially no time left."""
+    captured: dict = {}
+
+    async def _fake_research(topic, *, api_key, model, timeout):
+        captured["timeout"] = timeout
+        return PerplexityResult(
+            question=topic, answer="", citations=[], model=model,
+            search_results=[], tokens_input=0, tokens_output=0,
+            cost_usd=0.0, duration_ms=1, error="deep research ended: status=None",
+        )
+
+    monkeypatch.setattr(dr, "research", _fake_research)
+    provider = dr.DeepResearchProvider(_settings())
+
+    await provider.research("topic", sub_questions=1, depth="deep", time_budget_s=0.0)
+
+    assert captured["timeout"] == 0.0

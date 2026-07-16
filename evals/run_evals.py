@@ -80,6 +80,24 @@ def timeout_sec() -> int:
     return DEFAULT_TIMEOUT_SEC
 
 
+# Slack kept between the pipeline's self-imposed time budget and the harness's
+# hard subprocess kill, so the pipeline always has a chance to notice its budget
+# is spent, cancel gracefully, and write a partial report BEFORE the harness
+# would otherwise kill the process with nothing collected.
+_TIME_BUDGET_SLACK_SEC = 120
+_MIN_TIME_BUDGET_SEC = 60
+
+
+def time_budget_sec() -> int:
+    """The wall-clock budget passed to the pipeline via POLYSEARCH_TIME_BUDGET_S.
+
+    Kept safely under ``timeout_sec()`` (the subprocess kill timeout) so a run
+    that would otherwise blow the ceiling self-limits and reports whatever it
+    has, instead of being killed with no report at all.
+    """
+    return max(_MIN_TIME_BUDGET_SEC, timeout_sec() - _TIME_BUDGET_SLACK_SEC)
+
+
 # --------------------------------------------------------------------------- #
 # Row model
 # --------------------------------------------------------------------------- #
@@ -202,7 +220,10 @@ def run_public_target(task: dict, out_dir: Path) -> tuple[dict, str, Path]:
         "--output-dir",
         str(out_dir),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec())
+    env = {**os.environ, "POLYSEARCH_TIME_BUDGET_S": str(time_budget_sec())}
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout_sec(), env=env
+    )
     if proc.returncode != 0:
         raise RuntimeError(
             f"polysearch exited {proc.returncode}: {proc.stderr.strip()[:500]}"
@@ -227,7 +248,11 @@ def run_internal_target(task: dict, out_dir: Path) -> tuple[dict, str, Path]:
         )
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = shlex.split(base) + [task["topic"]]
-    env = {**os.environ, "POLYSEARCH_OUTPUT_DIR": str(out_dir)}
+    env = {
+        **os.environ,
+        "POLYSEARCH_OUTPUT_DIR": str(out_dir),
+        "POLYSEARCH_TIME_BUDGET_S": str(time_budget_sec()),
+    }
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout_sec(), env=env
     )

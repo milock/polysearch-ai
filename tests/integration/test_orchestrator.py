@@ -11,6 +11,7 @@ Every provider is mocked or null — no network. Covers the flow contract:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -444,3 +445,170 @@ async def test_max_iterations_zero_disables_loop(tmp_output_dir, monkeypatch):
         output_dir=tmp_output_dir,
     )
     assert report.refinement_iterations == []
+
+
+# ── time budget (task r3c) ───────────────────────────────────────────────────
+
+
+class _SlowResearch:
+    """Sleeps well past any tight test budget before returning a normal layer."""
+
+    name = "research"
+
+    def __init__(self, sleep_s: float = 0.5):
+        self._sleep_s = sleep_s
+
+    async def research(self, topic, *, sub_questions, depth):
+        await asyncio.sleep(self._sleep_s)
+        return LayerOutput(layer="research", results=[_src("https://example.test/slow")])
+
+
+class _SlowCommunitySource:
+    """A community source stuck well past the per-adapter timeout."""
+
+    name = "slow"
+    last_error = None
+
+    def __init__(self, sleep_s: float = 0.5):
+        self._sleep_s = sleep_s
+
+    async def search(self, topic, *, window_days, limit):
+        await asyncio.sleep(self._sleep_s)
+        return [
+            SourceResult(
+                url="https://example.test/slow-community",
+                title="slow",
+                snippet="never arrives in time",
+                tier="COMMUNITY",
+                layer="slow",
+            )
+        ]
+
+
+class _FastCommunitySource:
+    """Returns immediately — its result must survive a slow sibling's timeout."""
+
+    name = "fast"
+    last_error = None
+
+    async def search(self, topic, *, window_days, limit):
+        return [
+            SourceResult(
+                url="https://example.test/fast-community",
+                title="grid battery storage economics discussion",
+                snippet="arrived on time, on-topic for the relevance gate",
+                tier="COMMUNITY",
+                layer="fast",
+            )
+        ]
+
+
+class _SpyDeepResearch:
+    """Records the ``time_budget_s`` kwarg the orchestrator threads through."""
+
+    name = "deep_research"
+
+    def __init__(self):
+        self.received_time_budget_s: float | None = "not-called"  # sentinel
+
+    async def research(self, topic, *, sub_questions, depth, time_budget_s=None):
+        self.received_time_budget_s = time_budget_s
+        return LayerOutput(layer="deep_research")
+
+
+async def test_layer_cancelled_at_budget_records_error_and_writes_report(tmp_output_dir):
+    report = await run_research(
+        "grid battery storage economics",
+        depth="quick",
+        settings=Settings(),
+        providers=_providers(research=_SlowResearch(sleep_s=0.5)),
+        time_budget_s=0.05,
+        output_dir=tmp_output_dir,
+    )
+
+    # The run degrades gracefully — a cancelled layer never blocks the report.
+    assert list(tmp_output_dir.glob("*.md"))
+    assert any(
+        e.startswith("research:") and "exceeded remaining time budget" in e
+        for e in report.pipeline_errors
+    )
+    research_layer = next(lyr for lyr in report.layers if lyr.layer == "research")
+    assert research_layer.error is not None
+    assert research_layer.results == []
+    # Cancelled well before the full 500ms sleep would have elapsed.
+    assert research_layer.duration_ms < 400
+
+
+async def test_deep_research_receives_remaining_time_budget(tmp_output_dir):
+    spy = _SpyDeepResearch()
+    await run_research(
+        "grid battery storage economics",
+        depth="deep",
+        settings=Settings(),
+        providers=_providers(deep_research=spy),
+        time_budget_s=90.0,
+        output_dir=tmp_output_dir,
+    )
+    assert spy.received_time_budget_s is not None
+    assert spy.received_time_budget_s != "not-called"
+    # Some time has elapsed since the budget snapshot was taken; allow slack.
+    assert 0 < spy.received_time_budget_s <= 90.0
+
+
+async def test_community_adapter_timeout_lets_siblings_survive(tmp_output_dir):
+    report = await run_research(
+        "grid battery storage economics",
+        depth="quick",
+        settings=Settings(community_adapter_timeout_s=0.05),
+        providers=_providers(
+            community=[_SlowCommunitySource(sleep_s=0.5), _FastCommunitySource()]
+        ),
+        output_dir=tmp_output_dir,
+    )
+
+    community_layer = next(lyr for lyr in report.layers if lyr.layer == "community")
+    urls = {s.url for s in community_layer.results}
+    assert "https://example.test/fast-community" in urls
+    assert "https://example.test/slow-community" not in urls
+    assert any(
+        e.startswith("community/slow:") and "timed out after" in e
+        for e in report.pipeline_errors
+    )
+    # Bounded well under the slow source's full 500ms sleep.
+    assert community_layer.duration_ms < 400
+
+
+async def test_no_time_budget_set_behavior_unchanged(tmp_output_dir):
+    # A layer that takes some measurable-but-short time must complete normally
+    # (no cancellation, no budget-related pipeline error) when time_budget_s is
+    # never set — the default, pre-existing behavior.
+    report = await run_research(
+        "grid battery storage economics",
+        depth="quick",
+        settings=Settings(),
+        providers=_providers(research=_SlowResearch(sleep_s=0.02)),
+        output_dir=tmp_output_dir,
+    )
+    assert not any("time budget" in e for e in report.pipeline_errors)
+    research_layer = next(lyr for lyr in report.layers if lyr.layer == "research")
+    assert research_layer.error is None
+    assert research_layer.results != []
+
+
+async def test_refinement_skipped_when_budget_exhausted(tmp_output_dir, monkeypatch):
+    monkeypatch.setattr("openai.AsyncOpenAI", _FakeOpenAI)
+    report = await run_research(
+        "grid battery storage economics",
+        depth="standard",
+        settings=Settings(openai_api_key="test-key"),
+        providers=_providers(research=_FreshResearch()),
+        time_budget_s=0.0,
+        output_dir=tmp_output_dir,
+    )
+    assert report.refinement_iterations == []
+    assert any(
+        "refinement" in e and "skipped" in e and "time budget" in e
+        for e in report.pipeline_errors
+    )
+    # Still writes a real report despite the exhausted budget.
+    assert list(tmp_output_dir.glob("*.md"))

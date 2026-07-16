@@ -105,6 +105,17 @@ class Settings:
     deep_research_model: str = "sonar-deep-research"
     deep_research_timeout_s: int = 3600
 
+    # ── Time budget ───────────────────────────────────────────────────────
+    # Global wall-clock budget (seconds) for a whole run. ``None`` (the default)
+    # means unbounded — existing behavior. When set, the orchestrator bounds each
+    # first-pass layer (and the deep-research poll loop) to whatever time remains
+    # rather than letting any one layer run unbounded.
+    time_budget_s: float | None = None
+    # Per-adapter timeout (seconds) for the community layer. Always applied
+    # (independent of ``time_budget_s``) so one blocked source (Reddit's fallback
+    # chain, a rate-limiter backoff) can't stall the whole fused layer.
+    community_adapter_timeout_s: float = 60.0
+
     # ── Refinement / output ──────────────────────────────────────────────
     refinement_cost_ceiling_usd: float | None = None
     style_constraints: str | None = None
@@ -118,6 +129,7 @@ class Settings:
         output_dir_raw = _get("POLYSEARCH_OUTPUT_DIR")
         ceiling_raw = _get("POLYSEARCH_REFINEMENT_COST_CEILING_USD")
         style_raw = _get("POLYSEARCH_STYLE_CONSTRAINTS")
+        time_budget_raw = _get("POLYSEARCH_TIME_BUDGET_S")
 
         return cls(
             perplexity_api_key=_get("PERPLEXITY_API_KEY"),
@@ -160,6 +172,10 @@ class Settings:
                 "POLYSEARCH_DEEP_RESEARCH_MODEL", "sonar-deep-research"
             ),
             deep_research_timeout_s=_get_int("POLYSEARCH_DEEP_RESEARCH_TIMEOUT_S", 3600),
+            time_budget_s=(float(time_budget_raw) if time_budget_raw is not None else None),
+            community_adapter_timeout_s=_get_float(
+                "POLYSEARCH_COMMUNITY_ADAPTER_TIMEOUT_S", 60.0
+            ),
             refinement_cost_ceiling_usd=(
                 float(ceiling_raw) if ceiling_raw is not None else None
             ),

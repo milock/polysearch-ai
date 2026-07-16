@@ -74,5 +74,52 @@ def test_parse_layers_allowlist() -> None:
     assert cli._parse_layers("research, grounding") == {"research", "grounding"}
 
 
+def test_time_budget_flag_forwarded_to_run_research(monkeypatch, tmp_path) -> None:
+    fake = AsyncMock(return_value=_stub_report())
+    monkeypatch.setattr(cli, "run_research", fake)
+    rc = cli.main(
+        [
+            "--topic",
+            "distributed consensus",
+            "--output-dir",
+            str(tmp_path),
+            "--time-budget",
+            "2580",
+        ]
+    )
+    assert rc == 0
+    assert fake.await_args.kwargs["time_budget_s"] == 2580.0
+
+
+def test_time_budget_flag_omitted_defaults_to_none(monkeypatch, tmp_path) -> None:
+    fake = AsyncMock(return_value=_stub_report())
+    monkeypatch.setattr(cli, "run_research", fake)
+    cli.main(["--topic", "distributed consensus", "--output-dir", str(tmp_path)])
+    assert fake.await_args.kwargs["time_budget_s"] is None
+
+
+def test_layer_durations_logged_to_stderr(monkeypatch, tmp_path, capsys) -> None:
+    fake = AsyncMock(return_value=_stub_report_with_layers())
+    monkeypatch.setattr(cli, "run_research", fake)
+    rc = cli.main(["--topic", "distributed consensus", "--output-dir", str(tmp_path)])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "layer research finished in 1.2s" in err
+    assert "layer grounding finished in 0.5s" in err
+
+
 def _stub_report() -> PipelineReport:
     return PipelineReport(topic="t", depth="quick")
+
+
+def _stub_report_with_layers() -> PipelineReport:
+    from polysearch.output.schema import LayerOutput
+
+    return PipelineReport(
+        topic="t",
+        depth="quick",
+        layers=[
+            LayerOutput(layer="research", duration_ms=1200),
+            LayerOutput(layer="grounding", duration_ms=500),
+        ],
+    )
