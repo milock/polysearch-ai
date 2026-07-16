@@ -12,8 +12,10 @@ Two rules learned the hard way:
   place.
 - **Coverage matches the report markdown.** Key-fact coverage always fuzzy-matches
   the collected report ``.md`` text (falling back to the synthesis body only if no
-  md was collected), sentence-localized so paraphrase is caught but words merely
-  scattered across a long document are not.
+  md was collected), windowed over 1-3 consecutive sentences so paraphrase (even
+  split across two sentences) is caught but words merely scattered across a long
+  document are not. Facts are matched after markdown-noise stripping, suffix
+  normalization, and fact-side stopword dropping (see ``KEY_FACT_MATCH_THRESHOLD``).
 
 The gated citation metric is **claim-level** (``claims_supported/claims_total``);
 the raw pair-level rate is kept as a secondary, ungated column.
@@ -31,10 +33,76 @@ from polysearch.config import DEPTH_PROFILES
 
 from evals.report_adapter import NormalizedReport, normalize_report
 
-# A key fact counts as covered when its best sentence-localized token_set_ratio
-# clears this threshold (0–100). Sentence-localized so paraphrase within a
-# sentence matches while words scattered across the whole document do not.
-KEY_FACT_MATCH_THRESHOLD = 70.0
+# A key fact counts as covered when its best token_set_ratio over any 1-3
+# sentence window clears this threshold (0-100). Calibrated down from the
+# original 70 (task r3b): hand-checked morphological-variant and paraphrased
+# facts in real reports land in the 50-75 range once tokens are normalized,
+# while genuinely-absent facts land in the low 20s-40s (see the calibration
+# tests in tests/unit/test_eval_harness.py and evals/README.md). 45 sits with
+# clear margin on both sides of that split.
+KEY_FACT_MATCH_THRESHOLD = 45.0
+
+# Small suffix set stripped from every token before matching, so a fact and a
+# report sentence that use different inflections of the same word ("replicas"
+# vs "replica", "cutting" vs "cut") still line up. Deliberately crude (no
+# nltk/spacy) — order matters: longest/most specific suffix first.
+def _strip_word_suffix(word: str) -> str:
+    if word.endswith("tions") and len(word) > 6:
+        return word[:-5] + "t"
+    if word.endswith("tion") and len(word) > 5:
+        return word[:-4] + "t"
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith("ing") and len(word) > 5:
+        return word[:-3]
+    if word.endswith("ed") and len(word) > 4:
+        return word[:-2]
+    if word.endswith("es") and len(word) > 4:
+        return word[:-2]
+    if word.endswith("s") and len(word) > 3 and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+# Dropped from the FACT side only (never the report text) before matching, so
+# short facts that are mostly connective tissue ("options for each", "typical
+# ... suited to") aren't dominated by words carrying no content of their own.
+_FACT_STOPWORDS = frozenset({"and", "the", "of", "for", "each", "to"})
+
+# Markdown emphasis/code markers are formatting noise, not content — reports
+# routinely bold the key nouns a fact needs to match, and the literal "**"
+# characters otherwise count against the fuzzy ratio.
+_MARKDOWN_NOISE_RE = re.compile(r"\*\*|__|`")
+
+# How many consecutive sentences a fact is allowed to match across (best
+# window wins) — a fact's evidence sometimes spans a claim sentence plus its
+# immediate follow-on, not just one sentence in isolation.
+_MAX_FACT_WINDOW = 3
+
+
+def _normalize_for_match(text: str, *, drop_stopwords: bool) -> str:
+    """Lowercase, strip markdown noise, tokenize, and suffix-normalize every
+    word. ``drop_stopwords`` is only ever True for the fact side of a match."""
+    words = re.findall(r"[a-z0-9]+", _MARKDOWN_NOISE_RE.sub("", text.lower()))
+    stemmed = [_strip_word_suffix(w) for w in words]
+    if drop_stopwords:
+        stemmed = [w for w in stemmed if w not in _FACT_STOPWORDS]
+    return " ".join(stemmed)
+
+
+def _fact_windows(units: list[str]) -> list[str]:
+    """Every run of 1 to ``_MAX_FACT_WINDOW`` consecutive sentence units,
+    normalized once so a coverage check over many facts doesn't re-tokenize the
+    same windows repeatedly."""
+    n = len(units)
+    windows = []
+    for size in range(1, _MAX_FACT_WINDOW + 1):
+        for i in range(n - size + 1):
+            windows.append(
+                _normalize_for_match(" ".join(units[i : i + size]), drop_stopwords=False)
+            )
+    return windows
+
 
 # Same unresolved-template shape the report writer guards against.
 _PLACEHOLDER_RE = re.compile(r"\{\{[A-Z_]+\s*[—-].*?\}\}")
@@ -171,9 +239,10 @@ def _sentence_units(text: str) -> list[str]:
 def _key_fact_coverage(
     key_facts: list[str], text: str
 ) -> tuple[float | None, int, int]:
-    """(coverage fraction, covered, total). Each fact is matched at the sentence
-    level: covered when its best token_set_ratio over any sentence clears the
-    threshold. ``None`` when there is no text to match against."""
+    """(coverage fraction, covered, total). Each fact is matched against every
+    1-3 sentence window (best window wins) after markdown-noise stripping,
+    suffix normalization, and (fact-side only) stopword dropping. ``None`` when
+    there is no text to match against."""
     facts = [f for f in (key_facts or []) if f and f.strip()]
     total = len(facts)
     if not facts:
@@ -181,10 +250,11 @@ def _key_fact_coverage(
     units = _sentence_units(text)
     if not units:
         return None, 0, total
+    windows = _fact_windows(units)
     covered = 0
     for fact in facts:
-        fl = fact.lower()
-        best = max(fuzz.token_set_ratio(fl, u) for u in units)
+        fact_norm = _normalize_for_match(fact, drop_stopwords=True)
+        best = max(fuzz.token_set_ratio(fact_norm, w) for w in windows)
         if best >= KEY_FACT_MATCH_THRESHOLD:
             covered += 1
     return covered / total, covered, total

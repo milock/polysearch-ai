@@ -787,6 +787,110 @@ def test_coverage_splitter_preserves_decimals() -> None:
     assert any("3.75%" in u for u in units)
 
 
+# ---- F3b: coverage-metric vocabulary calibration (task r3b) --------------- #
+# Hand-checked defect: task comparison-postgres-mysql-oltp, fact "concurrency
+# and MVCC handling differences" against the report's actual MVCC sentence
+# scored 45 pre-fix (exact-token rapidfuzz match: "concurrent" != "concurrency",
+# "differences" absent, and meta-words like "and"/"handling" dilute a short
+# fact). These tests calibrate the fix directly against that hand-checked case
+# and the real r2 artifact it came from.
+_PG_MYSQL_REPORT = (
+    Path(__file__).resolve().parents[2]
+    / "evals/results/r2/public/comparison-postgres-mysql-oltp"
+    / "2026-07-16-postgresql-versus-mysql-for-oltp-workloads-at-mid.md"
+)
+
+_MVCC_SENTENCE = (
+    "The material explicitly ties **PostgreSQL** to better handling of "
+    "concurrent writes through **MVCC** and says readers do not block "
+    "writers, while **MySQL/InnoDB** is described as especially defensible "
+    "for update-heavy OLTP and simple read-heavy workloads."
+)
+
+
+def test_morphological_variant_clears_threshold() -> None:
+    """'concurrency' (fact) vs 'concurrent' (report text) is the same concept
+    in a different part of speech; pre-fix this scored 45 and was marked
+    uncovered. Normalization must clear the (lowered, calibrated) threshold."""
+    cov, covered, total = metrics._key_fact_coverage(
+        ["concurrency and mvcc handling differences"], _MVCC_SENTENCE
+    )
+    assert covered == 1
+    assert cov == pytest.approx(1.0)
+
+
+def test_unrelated_fact_against_same_text_still_fails() -> None:
+    """A fact with no real support in the text must not ride along on the
+    lowered threshold — same text as the morphological-variant case above."""
+    cov, covered, total = metrics._key_fact_coverage(
+        ["replication and high-availability options for each"], _MVCC_SENTENCE
+    )
+    assert covered == 0
+    assert cov == pytest.approx(0.0)
+
+
+def test_stopword_heavy_fact_does_not_false_positive_on_generic_text() -> None:
+    """A short fact made mostly of dropped stopwords ('for', 'each', 'of',
+    'the') must not match generic text that happens to reuse those same
+    stopwords. Pre-fix (no stopword drop) this scores 48 — a real false
+    positive once the threshold moves down to admit morphological variants;
+    dropping stopwords from the fact keeps it clear of the gate."""
+    fact = "options for each of the two approaches"
+    generic_text = (
+        "The report covers each region separately, with details for every "
+        "department across the organization for the entire fiscal year."
+    )
+    cov, covered, total = metrics._key_fact_coverage([fact], generic_text)
+    assert covered == 0
+
+
+def test_sliding_window_matches_fact_split_across_sentences() -> None:
+    """A fact whose evidence spans two consecutive sentences must be found by
+    the 2-3 sentence window, not just the single best sentence in isolation."""
+    text = (
+        "PostgreSQL uses multi-version concurrency control for its writes. "
+        "MySQL's InnoDB engine relies on row-level locking instead."
+    )
+    single_best = max(
+        metrics._key_fact_coverage(["MVCC versus row-level locking approach"], u)[0]
+        for u in metrics._sentence_units(text)
+    )
+    windowed, covered, _ = metrics._key_fact_coverage(
+        ["MVCC versus row-level locking approach"], text
+    )
+    assert covered == 1
+    assert windowed >= single_best
+
+
+def test_real_artifact_postgres_mysql_facts_1_and_4_pass() -> None:
+    """Calibration against the actual r2 artifact named in the task brief:
+    facts 1 and 4 are genuinely covered by the report (just inflected /
+    paraphrased differently than the task's key_facts wording)."""
+    text = _PG_MYSQL_REPORT.read_text()
+    fact_1_cov, fact_1_covered, _ = metrics._key_fact_coverage(
+        ["concurrency and mvcc handling differences"], text
+    )
+    fact_4_cov, fact_4_covered, _ = metrics._key_fact_coverage(
+        ["typical workloads each is better suited to"], text
+    )
+    assert fact_1_covered == 1
+    assert fact_4_covered == 1
+
+
+def test_real_artifact_postgres_mysql_genuinely_missing_fact_still_fails() -> None:
+    """Fact 2 (replication / HA) is not substantively answered in this
+    report's synthesis — it only appears as a follow-up *query* the pipeline
+    ran, never as a finding. The fix must not let it ride along on the
+    lowered threshold: this is the 'genuinely missing fact stays FAIL' case
+    (no raw r1 per-task artifacts survive in this repo to check instead — only
+    r1's aggregate scoreboards and diagnosis.md remain, see evals/README.md)."""
+    text = _PG_MYSQL_REPORT.read_text()
+    cov, covered, _ = metrics._key_fact_coverage(
+        ["replication and high-availability options for each"], text
+    )
+    assert covered == 0
+
+
 # ---- F4: timeout env override --------------------------------------------- #
 def test_timeout_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYSEARCH_EVAL_TIMEOUT_SEC", raising=False)
