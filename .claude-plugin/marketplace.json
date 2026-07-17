@@ -9,7 +9,7 @@
       "name": "polysearch",
       "source": "./",
       "description": "Modular, multi-source research pipeline with citation tier classification. Ships a Claude Code skill (/polysearch:research) plus a pip-installable Python CLI.",
-      "version": "0.1.0"
+      "version": "1.0.0"
     }
   ]
 }

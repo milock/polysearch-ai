@@ -4,7 +4,7 @@ All notable changes to this project will be documented here. Format loosely base
 
 ## [Unreleased]
 
-## [1.0.0] — 2026-07-14
+## [1.0.0] — 2026-07-17
 
 First stable release: the full pipeline, packaged for PyPI.
 

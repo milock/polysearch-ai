@@ -1,6 +1,6 @@
 """polysearch — modular multi-source research pipeline."""
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 # Imported after ``__version__`` is set: the orchestrator's dependency chain
 # reaches ``output.report``, which does ``from polysearch import __version__``.
