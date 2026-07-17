@@ -261,3 +261,23 @@ def test_depth_profile_table_values() -> None:
 def test_only_deep_is_deep_research_eligible() -> None:
     assert DEPTH_PROFILES["standard"].deep_research_eligible is False
     assert DEPTH_PROFILES["deep"].deep_research_eligible is True
+
+
+def test_from_env_searches_dotenv_from_cwd(monkeypatch, tmp_path) -> None:
+    """Regression: the no-arg load_dotenv() default searches from the package
+    file's directory, which finds nothing for pip/pipx installs — a tier-2 user
+    running in a directory with a populated .env diagnosed as tier 0. from_env
+    must resolve .env from the current working directory upward."""
+    import polysearch.config as config
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        config, "load_dotenv", lambda path=None, **k: captured.setdefault("path", path)
+    )
+    (tmp_path / ".env").write_text("SOME_VAR=1\n")
+    monkeypatch.chdir(tmp_path)
+    config.Settings.from_env()
+    assert captured["path"] is not None
+    from pathlib import Path
+
+    assert Path(captured["path"]).resolve() == (tmp_path / ".env").resolve()

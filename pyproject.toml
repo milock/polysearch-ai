@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polysearch-ai"
-version = "1.0.0"
+version = "1.0.1"
 description = "Modular, multi-source research pipeline with citation tier classification. Plug-and-play Python package + Claude Code skill."
 readme = "README.md"
 requires-python = ">=3.12"

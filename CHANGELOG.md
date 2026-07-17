@@ -4,6 +4,16 @@ All notable changes to this project will be documented here. Format loosely base
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-07-17
+
+### Fixed
+- `.env` discovery for installed packages: `Settings.from_env()` now searches
+  for `.env` from the current working directory upward (`find_dotenv(usecwd=True)`).
+  The previous no-arg `load_dotenv()` searched from the package's own file
+  location, which worked in a source checkout but silently found nothing when
+  installed via pip/pipx — credentials in a perfectly good `.env` were ignored
+  and `--diagnose` reported tier 0.
+
 ## [1.0.0] — 2026-07-17
 
 First stable release: the full pipeline, packaged for PyPI.

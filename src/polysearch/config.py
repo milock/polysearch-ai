@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 DiscoveryBackend = Literal["perplexity", "brave", "firecrawl"]
 
@@ -124,7 +124,11 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         """Build Settings from ``.env`` + process environment."""
-        load_dotenv()
+        # Search for .env from the CURRENT DIRECTORY upward. The no-arg
+        # default searches from this file's location instead, which works
+        # in a source checkout but finds nothing for installed packages
+        # (pip/pipx site-packages) — the user's .env is where THEY run.
+        load_dotenv(find_dotenv(usecwd=True) or None)
 
         output_dir_raw = _get("POLYSEARCH_OUTPUT_DIR")
         ceiling_raw = _get("POLYSEARCH_REFINEMENT_COST_CEILING_USD")
