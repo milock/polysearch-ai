@@ -25,6 +25,40 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_live)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ratelimit_ledger(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point the shared rate-limit ledger at a temp dir for every test.
+
+    The provider seams route through ``ratelimit.acquire`` against a default
+    limiter whose state dir is ``~/.cache/polysearch/ratelimit/``. Redirect it
+    per-test so the suite never touches the real cache and stays hermetic.
+    """
+    from polysearch import ratelimit
+
+    ledger = tmp_path_factory.mktemp("ratelimit")
+    monkeypatch.setattr(
+        ratelimit, "_default_limiter", ratelimit.RateLimiter(state_dir=ledger)
+    )
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop ``Settings.from_env`` from loading a developer's ``.env`` during tests.
+
+    ``polysearch.config`` calls ``load_dotenv()`` inside ``Settings.from_env``. A
+    developer with a real ``.env`` (a documented, encouraged setup) would have it
+    reloaded mid-test — silently repopulating keys that a test just cleared with
+    ``monkeypatch.delenv`` — making the unit suite pass or fail depending on the
+    machine. Patching the call site to a no-op keeps the suite hermetic: tests see
+    only the process environment they set up, never a ``.env`` on disk.
+    """
+    import polysearch.config as config
+
+    monkeypatch.setattr(config, "load_dotenv", lambda *a, **k: False)
+
+
 @pytest.fixture
 def project_root() -> Path:
     """Path to the polysearch project root (the parent of `tests/`)."""

@@ -3,8 +3,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "polysearch"
-version = "0.1.0"
+name = "polysearch-ai"
+version = "1.0.0"
 description = "Modular, multi-source research pipeline with citation tier classification. Plug-and-play Python package + Claude Code skill."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [
   { name = "polysearch contributors" },
 ]
-keywords = ["research", "ai", "citations", "perplexity", "firecrawl", "qdrant", "claude", "llm"]
+keywords = ["research", "ai", "citations", "perplexity", "firecrawl", "claude", "llm"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -29,8 +29,7 @@ dependencies = [
   "httpx>=0.27,<1",
   "openai>=1.40,<2",
   "anthropic>=0.40,<1",
-  "qdrant-client>=1.10,<2",
-  "firecrawl-py>=2.0,<3",
+  "firecrawl-py>=3.1,<5",
   "rapidfuzz>=3.9,<4",
   "python-dotenv>=1,<2",
   "tenacity>=9,<10",
@@ -40,6 +39,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+browser = [
+  "playwright>=1.45",
+]
 dev = [
   "pytest>=8.2,<9",
   "pytest-asyncio>=0.24,<1",
@@ -64,7 +66,11 @@ Changelog = "https://github.com/milock/polysearch/blob/main/CHANGELOG.md"
 where = ["src"]
 
 [tool.setuptools.package-data]
-polysearch = ["py.typed"]
+polysearch = [
+  "py.typed",
+  "data/domain_tiers.yaml",
+  "data/authoritative_schemas/*.yaml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

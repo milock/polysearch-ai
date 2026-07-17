@@ -59,6 +59,10 @@ config/*.local.yaml
 /reports/
 /output/
 
+# Eval raw reports (regenerated per round). Scoreboards are committed per-round
+# by hand; the raw per-task md/json under results/ are not tracked.
+/evals/results/
+
 # Lockfiles from alternate package managers (we use pip+pyproject.toml)
 uv.lock
 poetry.lock

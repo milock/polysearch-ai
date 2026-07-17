@@ -1,1 +1,1 @@
-"""Provider implementations: Perplexity, Firecrawl, Qdrant, OpenAI/Anthropic synthesizers."""
+"""Provider implementations: Perplexity, Firecrawl, deep research, OpenAI/Anthropic synthesizers, LinkedIn."""

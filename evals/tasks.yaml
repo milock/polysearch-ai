@@ -1,0 +1,158 @@
+# Eval task suite for polysearch.
+#
+# 12 simulated deep-research tasks, two in each of six categories, chosen to
+# stress different layers of the pipeline:
+#   FACTUAL       — numeric-heavy; stresses citation verification + number checks
+#   COMPARISON    — two entities weighed; stresses balance + source breadth
+#   TECHNICAL     — deep dive; stresses grounding + technical source quality
+#   TREND         — market/landscape; stresses recency + synthesis
+#   RECENT        — events < ~30 days; stresses the community/last-30-days layer
+#   CONTESTED     — ambiguous/disputed; stresses even-handedness + refinement
+#
+# Every topic here is GENERIC on purpose — this file ships in the public repo
+# and is checked by the repo leakage gate. No private or vertical topics.
+#
+# Fields per task:
+#   id                 stable slug (names the per-task results dir)
+#   topic              the research query passed to the target CLI
+#   depth              quick | standard | deep
+#   category           one of the six above
+#   key_facts          3–5 checklist items a good report must cover (fuzzy-matched)
+#   expects_refinement whether the goal-driven refinement loop should trigger
+
+tasks:
+  # ----------------------------- FACTUAL ----------------------------------- #
+  - id: factual-fed-rate
+    topic: current US federal funds rate and its trajectory over the past 12 months
+    depth: standard
+    category: FACTUAL
+    key_facts:
+      - the current federal funds target range
+      - the direction of rate changes over the past year
+      - the number of FOMC rate decisions in the period
+      - the most recent FOMC meeting date
+    expects_refinement: false
+
+  - id: factual-global-ev-share
+    topic: global electric vehicle share of new car sales in the most recent full year
+    depth: standard
+    category: FACTUAL
+    key_facts:
+      - the global EV share of new car sales percentage
+      - year-over-year change in that share
+      - which region leads EV adoption
+      - a total unit or sales figure
+    expects_refinement: false
+
+  # ---------------------------- COMPARISON --------------------------------- #
+  - id: comparison-postgres-mysql-oltp
+    topic: PostgreSQL versus MySQL for OLTP workloads at mid-scale in 2026
+    depth: standard
+    category: COMPARISON
+    key_facts:
+      - concurrency and MVCC handling differences
+      - "replication and high availability: streaming replication, group replication, failover"
+      - indexing and query-planner differences
+      - "workload fit: read-heavy, write-heavy, and high-concurrency OLTP patterns"
+    expects_refinement: true
+
+  - id: comparison-react-svelte
+    topic: React versus Svelte for building a new production web app in 2026
+    depth: standard
+    category: COMPARISON
+    key_facts:
+      - the rendering and reactivity model of each
+      - bundle size and runtime performance trade-offs
+      - ecosystem maturity and hiring pool for each
+      - the learning curve difference
+    expects_refinement: true
+
+  # ------------------------- TECHNICAL DEEP DIVE --------------------------- #
+  - id: technical-webgpu-adoption
+    topic: state of WebGPU adoption and browser support in 2026
+    depth: deep
+    category: TECHNICAL
+    key_facts:
+      - which browsers ship WebGPU by default
+      - the main use cases driving adoption
+      - remaining gaps versus native graphics APIs
+      - the relationship between WebGPU and WGSL
+    expects_refinement: true
+
+  - id: technical-quic-http3
+    topic: how QUIC and HTTP/3 change web transport compared with TCP and HTTP/2
+    depth: deep
+    category: TECHNICAL
+    key_facts:
+      - how QUIC eliminates head-of-line blocking
+      - QUIC's use of UDP and built-in encryption
+      - connection migration and 0-RTT resumption
+      - current deployment and browser support levels
+    expects_refinement: true
+
+  # ---------------------------- TREND / MARKET ----------------------------- #
+  - id: trend-agentic-coding
+    topic: the agentic AI coding-tool landscape in 2026
+    depth: deep
+    category: TREND
+    key_facts:
+      - the major categories of agentic coding tools
+      - how autonomous agents differ from inline code completion
+      - the leading vendors and open-source entrants
+      - the main adoption barriers for teams
+    expects_refinement: true
+
+  - id: trend-humanoid-robotics
+    topic: the commercial humanoid robotics market and its near-term outlook
+    depth: standard
+    category: TREND
+    key_facts:
+      - the leading humanoid robotics companies
+      - the primary target applications
+      - current cost and deployment barriers
+      - near-term market size or growth expectations
+    expects_refinement: true
+
+  # ---------------------------- RECENT EVENTS ------------------------------ #
+  - id: recent-ai-model-releases
+    topic: notable large language model releases in the last 30 days
+    depth: standard
+    category: RECENT
+    key_facts:
+      - at least two recently released models and their vendors
+      - a headline capability or benchmark claim for each
+      - how they compare to the prior generation
+    expects_refinement: true
+
+  - id: recent-open-source-launches
+    topic: notable open-source developer tools launched or trending in the last 30 days
+    depth: standard
+    category: RECENT
+    key_facts:
+      - at least two recently launched or trending tools
+      - the problem each tool addresses
+      - community reception or adoption signal
+    expects_refinement: true
+
+  # ------------------------ AMBIGUOUS / CONTESTED -------------------------- #
+  - id: contested-four-day-workweek
+    topic: the evidence on whether a four-day workweek improves productivity
+    depth: deep
+    category: CONTESTED
+    key_facts:
+      - findings from four-day-week trials on productivity
+      - effects on employee wellbeing and burnout
+      - the main criticisms or limitations of the evidence
+      - which industries the evidence does and does not generalize to
+    expects_refinement: true
+
+  - id: contested-remote-vs-office
+    topic: the evidence on remote work versus in-office work for productivity and collaboration
+    depth: deep
+    category: CONTESTED
+    key_facts:
+      - what studies find about remote work and individual productivity
+      - effects on collaboration and innovation
+      - the disagreement between employer and employee perspectives
+      - how hybrid models attempt to balance the trade-offs
+    expects_refinement: true
