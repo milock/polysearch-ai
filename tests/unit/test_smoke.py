@@ -7,7 +7,9 @@ from polysearch import cli
 
 
 def test_package_version_matches_pyproject() -> None:
-    assert polysearch.__version__ == "0.1.0"
+    import importlib.metadata
+
+    assert polysearch.__version__ == importlib.metadata.version("polysearch-ai")
 
 
 def test_cli_parser_builds() -> None:
