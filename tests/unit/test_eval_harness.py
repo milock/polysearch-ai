@@ -800,6 +800,15 @@ _PG_MYSQL_REPORT = (
     / "2026-07-16-postgresql-versus-mysql-for-oltp-workloads-at-mid.md"
 )
 
+# Eval artifacts under evals/results/ are deliberately gitignored (raw reports
+# never ship in the repo), so the real-artifact calibration tests only run on
+# machines that have produced the r2 round locally. The synthetic calibration
+# cases above/below cover the same behaviors hermetically.
+_needs_pg_artifact = pytest.mark.skipif(
+    not _PG_MYSQL_REPORT.exists(),
+    reason="r2 eval artifact not present (evals/results/ is gitignored)",
+)
+
 _MVCC_SENTENCE = (
     "The material explicitly ties **PostgreSQL** to better handling of "
     "concurrent writes through **MVCC** and says readers do not block "
@@ -862,6 +871,7 @@ def test_sliding_window_matches_fact_split_across_sentences() -> None:
     assert windowed >= single_best
 
 
+@_needs_pg_artifact
 def test_real_artifact_postgres_mysql_facts_1_and_4_pass() -> None:
     """Calibration against the actual r2 artifact named in the task brief:
     facts 1 and 4 are genuinely covered by the report (just inflected /
@@ -877,6 +887,7 @@ def test_real_artifact_postgres_mysql_facts_1_and_4_pass() -> None:
     assert fact_4_covered == 1
 
 
+@_needs_pg_artifact
 def test_source_tier_heading_does_not_false_positive_on_availability_fact() -> None:
     """Regression: the report's own '### High (primary, peer-reviewed, official)
     (22)' bibliography-tier heading shares the word 'high' with a fact about
@@ -893,6 +904,7 @@ def test_source_tier_heading_does_not_false_positive_on_availability_fact() -> N
     assert covered == 0
 
 
+@_needs_pg_artifact
 def test_real_artifact_postgres_mysql_genuinely_missing_fact_still_fails() -> None:
     """Fact 2 (replication / HA) is not substantively answered in this
     report's synthesis — it only appears as a follow-up *query* the pipeline
