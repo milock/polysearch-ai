@@ -2,8 +2,8 @@
 
 > Multi-source research pipeline with citation tier classification and self-verifying output. A pip-installable Python CLI plus a drop-in Claude Code plugin.
 
-[![PyPI version](https://img.shields.io/pypi/v/polysearch-ai.svg)](https://pypi.org/project/polysearch-ai/)
-[![Python](https://img.shields.io/pypi/pyversions/polysearch-ai.svg)](https://pypi.org/project/polysearch-ai/)
+[![PyPI version](https://img.shields.io/pypi/v/polysearch-ai.svg?cacheSeconds=3600)](https://pypi.org/project/polysearch-ai/)
+[![Python](https://img.shields.io/pypi/pyversions/polysearch-ai.svg?cacheSeconds=3600)](https://pypi.org/project/polysearch-ai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/milock/polysearch-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/milock/polysearch-ai/actions/workflows/tests.yml)
 
