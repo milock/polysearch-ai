@@ -14,6 +14,10 @@ Rendering behaviours:
 - ``BLOCKED_SOURCE`` citations are excluded into their own "Excluded (blocked
   sources)" section, kept separate from dead links; ``FETCH_BLOCKED`` sources
   are blocked-but-alive, so they stay in the buckets and are only noted;
+- within claim-verifiable layers (research/deep_research/recovery/refinement),
+  sources never attributed to a checked claim are trimmed from the tier
+  buckets to a collapsed "N additional sources consulted but not cited" note
+  rather than listed in full — merely-collected isn't the same as cited;
 - a "Refinement Trace" section auditing the goal-driven refinement loop;
 - a "Style Audit" section, rendered only when ``settings.style_constraints`` set.
 """
@@ -183,11 +187,26 @@ def _render_pipeline_decisions(classification: dict, depth_ran: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _is_claim_verifiable_layer(layer_name: str) -> bool:
+    """Layers whose sources go through claim extraction + verification
+    (research/deep_research/recovery/each refinement round). Other layers
+    (grounding, community, linkedin, person-context) feed the synthesizer
+    directly without per-source claim attribution, so citedness can't be
+    determined for them — they're exempt from the uncited-sources trim."""
+    return layer_name in ("research", "deep_research", "recovery") or layer_name.startswith(
+        "refinement-"
+    )
+
+
 def _render_sources_by_tier(report: PipelineReport) -> str:
     dead_urls: set[str] = set()
     blocked_urls: set[str] = set()
     fetch_blocked = 0
+    # None when verification didn't run — there's no basis to call anything
+    # "uncited" then, so the trim below is skipped entirely.
+    cited_urls: set[str] | None = None
     if report.verification:
+        cited_urls = {r.url for r in report.verification.results}
         for r in report.verification.results:
             if r.status == "URL_DEAD":
                 dead_urls.add(r.url)
@@ -197,9 +216,14 @@ def _render_sources_by_tier(report: PipelineReport) -> str:
                 fetch_blocked += 1
 
     buckets: dict[str, list[tuple[str, str, str]]] = {t: [] for t in _TIER_ORDER}
+    uncited_urls: set[str] = set()
     for layer in report.layers:
+        verifiable = _is_claim_verifiable_layer(layer.layer)
         for s in layer.results:
             if s.url in dead_urls or s.url in blocked_urls:
+                continue
+            if verifiable and cited_urls is not None and s.url not in cited_urls:
+                uncited_urls.add(s.url)
                 continue
             buckets.setdefault(s.tier, []).append((s.url, s.title, s.published_date or ""))
 
@@ -231,6 +255,11 @@ def _render_sources_by_tier(report: PipelineReport) -> str:
         lines.append(
             f"\n_{fetch_blocked} source(s) fetch-blocked (403/429/5xx) — kept in "
             "buckets as blocked-but-alive, not counted as dead._"
+        )
+    if uncited_urls:
+        noun = "source" if len(uncited_urls) == 1 else "sources"
+        lines.append(
+            f"\n_{len(uncited_urls)} additional {noun} consulted but not cited._"
         )
     return "\n".join(lines) + "\n"
 

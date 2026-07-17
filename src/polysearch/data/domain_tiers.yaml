@@ -10,8 +10,11 @@
 #
 # Root domains only (no scheme, no path). Subdomains auto-match
 # (docs.example.gov -> example.gov). Bucket names are for readability;
-# the loader flattens them. curated_core stays FIRST in each tier so the
-# recovery allowlist (high_tier_domains()[:20]) is the hand-curated core.
+# the loader flattens them. curated_core stays FIRST in each tier so
+# high_tier_domains()[:20] is the hand-curated core (the recovery pass
+# stopped forcing this list as a search_domain_filter in Round 4 — it was
+# polluting off-topic reports with generic HIGH-tier citations; see
+# verification/recovery.py — but other callers may still use the accessor).
 #
 # Provenance: merged 2026-07-13 from public credibility datasets —
 # Domain Quality Ratings (DQR), Wikipedia Perennial Sources (WP:RSP),

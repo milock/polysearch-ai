@@ -14,10 +14,14 @@ re-source each with a hardened single-shot Perplexity query that prefers primary
 domains and is told to answer "UNVERIFIED" rather than invent a source, then
 return the recovered results for tier-tagging + re-verification.
 
-The "prefer primary domains" instruction is API-enforced rather than
-prompt-hoped — every recovery query passes
-``domain_filter=high_tier_domains()[:20]`` (Perplexity caps ``search_domain_filter``
-at 20 entries), the curated HIGH-tier core of ``domain_tiers.yaml``.
+The "prefer primary domains" instruction is prompt-only (see
+``_QUERY_TEMPLATE``). It used to also be API-enforced via
+``domain_filter=high_tier_domains()[:20]`` — the curated HIGH-tier core of
+``domain_tiers.yaml`` — but that forced every recovery query to the same
+generic allowlist regardless of topic, so an off-topic report (e.g.
+PostgreSQL internals) got NIH/BLS/SEC citations injected into its HIGH bucket.
+Recovered results are now relevance-gated against the claim they were
+re-sourced for instead (see ``_relevant_to_claim``).
 """
 
 from __future__ import annotations
@@ -25,10 +29,10 @@ from __future__ import annotations
 import asyncio
 
 from polysearch.config import Settings
+from polysearch.extractors.claims import _content_tokens, _number_core, _MIN_OVERLAP
 from polysearch.output.schema import Claim, VerificationReport
 from polysearch.providers import perplexity
 from polysearch.providers.perplexity import PerplexityResult
-from polysearch.sources.authority import high_tier_domains
 
 _FAILED_STATUSES = {"URL_DEAD", "QUOTE_NOT_FOUND", "NUMBER_MISMATCH"}
 
@@ -71,6 +75,28 @@ def _failed_claims(
     return unique[:max_queries]
 
 
+def _relevant_to_claim(claim: Claim, result: PerplexityResult) -> bool:
+    """Gate a recovered result against the claim it was re-sourced for.
+
+    Mirrors ``extractors.claims._localize_source_urls``'s scoring: content-word
+    overlap of >= ``_MIN_OVERLAP`` between the claim text and the recovered
+    answer, or a literal hit on one of the claim's numeric figures. A result
+    that never mentions the claim's subject terms is noise regardless of how
+    authoritative its domain is.
+    """
+    claim_tokens = _content_tokens(claim.text)
+    number_cores = [c for c in (_number_core(n) for n in claim.numbers) if c]
+    answer_low = (result.answer or "").lower()
+    if any(core in answer_low for core in number_cores):
+        return True
+    overlap = (
+        len(claim_tokens & _content_tokens(result.answer or "")) / len(claim_tokens)
+        if claim_tokens
+        else 0.0
+    )
+    return overlap >= _MIN_OVERLAP
+
+
 async def recover(
     topic: str,
     report: VerificationReport,
@@ -83,19 +109,16 @@ async def recover(
     if not targets:
         return []
 
-    # search_domain_filter is capped at 20 entries by the Perplexity API.
-    domain_filter = high_tier_domains()[:20]
-
-    async def _one(claim: Claim) -> list[PerplexityResult]:
+    async def _one(claim: Claim) -> tuple[Claim, list[PerplexityResult]]:
         query = _QUERY_TEMPLATE.format(claim=claim.text[:400], topic=topic[:200])
-        return await perplexity.research(
+        results = await perplexity.research(
             query,
             depth="standard",
             sub_questions=1,  # no decomposition — the query IS the sub-question
             recency="month",
-            domain_filter=domain_filter,
             api_key=settings.perplexity_api_key,
         )
+        return claim, results
 
     batches = await asyncio.gather(*(_one(c) for c in targets), return_exceptions=True)
 
@@ -103,7 +126,8 @@ async def recover(
     for batch in batches:
         if isinstance(batch, BaseException):
             continue
-        for r in batch:
+        claim, results = batch
+        for r in results:
             if r.error:
                 continue
             # Honest-empty: the model said it couldn't source it. Keep only
@@ -111,6 +135,8 @@ async def recover(
             if "UNVERIFIED" in (r.answer or "")[:200] and not r.citations:
                 continue
             if not r.citations:
+                continue
+            if not _relevant_to_claim(claim, r):
                 continue
             recovered.append(r)
     return recovered
