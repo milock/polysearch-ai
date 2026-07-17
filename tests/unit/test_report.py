@@ -212,6 +212,82 @@ def test_no_excluded_dead_links_when_none() -> None:
     assert "### Excluded (dead links)" not in out
 
 
+# ── Sources by tier: uncited-sources trim (Round 4 fix) ──────────────────────
+
+UNCITED_URL = "https://consulted.example.org/never-cited"
+
+
+def _report_with_uncited_source() -> PipelineReport:
+    """One HIGH-tier source that was verified/cited, one that was merely
+    collected in the same (claim-verifiable) layer but never attributed to a
+    checked claim."""
+    layer = LayerOutput(
+        layer="research",
+        results=[
+            _source(LIVE_URL, "HIGH", title="Peer-reviewed yield study"),
+            _source(UNCITED_URL, "HIGH", title="Consulted But Uncited"),
+        ],
+        cost_usd=0.05,
+        duration_ms=500,
+    )
+    verification = _verification(
+        [VerificationResult(claim_id="c1", url=LIVE_URL, status="OK")],
+        verified_ok=1,
+    )
+    return PipelineReport(
+        topic="urban rooftop beekeeping yields",
+        depth="standard",
+        layers=[layer],
+        synthesis_md="A neutral synthesis paragraph.",
+        verification=verification,
+    )
+
+
+def test_uncited_source_omitted_from_tier_bucket() -> None:
+    out = _render_sources_by_tier(_report_with_uncited_source())
+    assert UNCITED_URL not in out
+
+
+def test_uncited_source_renders_collapsed_count_note() -> None:
+    out = _render_sources_by_tier(_report_with_uncited_source())
+    assert "_1 additional source consulted but not cited._" in out
+
+
+def test_cited_source_still_listed_alongside_uncited_trim() -> None:
+    out = _render_sources_by_tier(_report_with_uncited_source())
+    assert LIVE_URL in out
+
+
+def test_no_uncited_trim_when_verification_absent() -> None:
+    """Without verification data there's no basis to call a source uncited —
+    preserve the old full-list behavior rather than guess."""
+    report = _report_with_uncited_source()
+    report.verification = None
+    out = _render_sources_by_tier(report)
+    assert UNCITED_URL in out
+    assert "additional source" not in out
+
+
+def test_grounding_layer_source_exempt_from_citedness_trim() -> None:
+    """Firecrawl-scraped grounding sources feed the synthesizer directly and
+    are never claim-extracted/verified individually (only used to localize
+    synthesis-level claims) — trimming them by citedness would wrongly hide
+    content that did inform the report."""
+    layer = LayerOutput(
+        layer="grounding",
+        results=[_source(UNCITED_URL, "HIGH", layer="grounding", title="Scraped Grounding Page")],
+        cost_usd=0.05,
+        duration_ms=500,
+    )
+    verification = _verification([], verified_ok=0)  # nothing checked at all
+    report = PipelineReport(
+        topic="t", depth="standard", layers=[layer], synthesis_md="x", verification=verification,
+    )
+    out = _render_sources_by_tier(report)
+    assert UNCITED_URL in out
+    assert "additional source" not in out
+
+
 # ── Sources by tier: blocked-source + fetch-blocked (public-only) ────────────
 
 def test_blocked_source_in_separate_excluded_section() -> None:

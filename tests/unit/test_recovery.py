@@ -17,7 +17,6 @@ from polysearch.output.schema import (
 )
 from polysearch.providers import perplexity
 from polysearch.providers.perplexity import Citation, PerplexityResult
-from polysearch.sources.authority import high_tier_domains
 from polysearch.verification import recovery
 
 
@@ -131,7 +130,11 @@ def test_should_recover_none_report():
 # ── recover ──────────────────────────────────────────────────────────────────
 
 
-async def test_recover_passes_high_tier_domain_filter(monkeypatch):
+async def test_recover_no_longer_forces_curated_domain_allowlist(monkeypatch):
+    """Round 4 fix: the unconditional top-20 curated allowlist polluted
+    off-topic reports (NIH/BLS/SEC citations on a PostgreSQL report). The
+    anti-fabrication prompt still asks for primary sources, but the API-level
+    ``search_domain_filter`` is no longer forced."""
     calls: list[dict] = []
 
     async def _fake_research(query, **kwargs):
@@ -146,10 +149,7 @@ async def test_recover_passes_high_tier_domain_filter(monkeypatch):
     await recovery.recover("database indexing topic", report, [claim], settings=SETTINGS)
 
     assert len(calls) == 1
-    expected = high_tier_domains()[:20]
-    assert calls[0]["domain_filter"] == expected
-    # Perplexity's search_domain_filter API caps at 20 entries.
-    assert len(expected) <= 20
+    assert calls[0].get("domain_filter") is None
 
 
 async def test_recover_with_no_failed_claims_never_calls_research(monkeypatch):
@@ -181,7 +181,7 @@ async def test_recover_drops_unverified_and_uncited_results(monkeypatch):
             _pr(error="RuntimeError: boom"),  # errored -> drop
             _pr(answer="UNVERIFIED - no primary source found"),  # honest-empty -> drop
             _pr(answer="Some answer but no sources"),  # no citations -> drop
-            _pr(answer="Solid answer", citations=[_cited()]),  # keep
+            _pr(answer="Solid answer confirming the number 42", citations=[_cited()]),  # keep
         ]
 
     monkeypatch.setattr(perplexity, "research", _fake_research)
@@ -192,7 +192,59 @@ async def test_recover_drops_unverified_and_uncited_results(monkeypatch):
     out = await recovery.recover("topic", report, [claim], settings=SETTINGS)
 
     assert len(out) == 1
-    assert out[0].answer == "Solid answer"
+    assert out[0].answer == "Solid answer confirming the number 42"
+    assert out[0].citations[0].url == "https://cms.gov/rule"
+
+
+async def test_recover_drops_result_off_topic_from_its_claim(monkeypatch):
+    """Relevance gate: a recovered result whose content has no meaningful
+    token overlap with the claim it was recovered for is dropped even though
+    it carries a citation — domain authority doesn't excuse topical noise."""
+
+    async def _fake_research(query, **kwargs):
+        return [
+            _pr(
+                answer=(
+                    "The CDC reports emergency room visits for seasonal "
+                    "influenza increased across Midwest hospitals this winter."
+                ),
+                citations=[_cited()],
+            )
+        ]
+
+    monkeypatch.setattr(perplexity, "research", _fake_research)
+
+    claim = _claim("c1", "PostgreSQL query planner indexing overhead rose 42 percent")
+    report = _report_with_failure("c1")
+
+    out = await recovery.recover("database indexing topic", report, [claim], settings=SETTINGS)
+
+    assert out == []
+
+
+async def test_recover_keeps_on_topic_result(monkeypatch):
+    """An on-topic recovered result (meaningful overlap with the claim it was
+    recovered for) survives the relevance gate."""
+
+    async def _fake_research(query, **kwargs):
+        return [
+            _pr(
+                answer=(
+                    "PostgreSQL query planner indexing overhead rose after the "
+                    "vendor's benchmark update, matching the 42 percent figure."
+                ),
+                citations=[_cited()],
+            )
+        ]
+
+    monkeypatch.setattr(perplexity, "research", _fake_research)
+
+    claim = _claim("c1", "PostgreSQL query planner indexing overhead rose 42 percent")
+    report = _report_with_failure("c1")
+
+    out = await recovery.recover("database indexing topic", report, [claim], settings=SETTINGS)
+
+    assert len(out) == 1
     assert out[0].citations[0].url == "https://cms.gov/rule"
 
 
