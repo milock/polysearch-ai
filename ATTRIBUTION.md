@@ -101,7 +101,7 @@ The Claude Code skill under [`skills/research/`](skills/research/) follows the c
 A link in your README is plenty:
 
 ```markdown
-Powered by [polysearch](https://github.com/milock/polysearch).
+Powered by [polysearch](https://github.com/milock/polysearch-ai).
 ```
 
 For academic or research citations:
@@ -111,6 +111,6 @@ For academic or research citations:
   author = {polysearch contributors},
   title = {polysearch: multi-source research pipeline with citation verification},
   year = {2026},
-  url = {https://github.com/milock/polysearch}
+  url = {https://github.com/milock/polysearch-ai}
 }
 ```

@@ -21,7 +21,7 @@ The whole repository is a Claude Code plugin. Installing it gives you the
 Add the marketplace and install, straight from the repo:
 
 ```
-/plugin marketplace add milock/polysearch
+/plugin marketplace add milock/polysearch-ai
 /plugin install polysearch
 ```
 
@@ -44,7 +44,7 @@ If you do not want the full plugin, copy just the skill. The installer does this
 for you:
 
 ```bash
-git clone https://github.com/milock/polysearch.git
+git clone https://github.com/milock/polysearch-ai.git
 cd polysearch && ./install.sh
 ```
 

@@ -56,11 +56,11 @@ dev = [
 polysearch = "polysearch.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/milock/polysearch"
-Documentation = "https://github.com/milock/polysearch#readme"
-Repository = "https://github.com/milock/polysearch"
-Issues = "https://github.com/milock/polysearch/issues"
-Changelog = "https://github.com/milock/polysearch/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/milock/polysearch-ai"
+Documentation = "https://github.com/milock/polysearch-ai#readme"
+Repository = "https://github.com/milock/polysearch-ai"
+Issues = "https://github.com/milock/polysearch-ai/issues"
+Changelog = "https://github.com/milock/polysearch-ai/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

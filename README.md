@@ -5,7 +5,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/polysearch-ai.svg)](https://pypi.org/project/polysearch-ai/)
 [![Python](https://img.shields.io/pypi/pyversions/polysearch-ai.svg)](https://pypi.org/project/polysearch-ai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/milock/polysearch/actions/workflows/tests.yml/badge.svg)](https://github.com/milock/polysearch/actions/workflows/tests.yml)
+[![CI](https://github.com/milock/polysearch-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/milock/polysearch-ai/actions/workflows/tests.yml)
 
 polysearch runs one research topic through several web-backed layers in parallel, synthesizes the results into a cited answer, then checks every citation against the page it came from. What you get back is a markdown report where each source carries an authority tier and each claim has been fetched and matched, not just asserted.
 
@@ -34,7 +34,7 @@ You get a markdown report (and a sibling JSON) in `./reports/`, with citations f
 The same capability as a Claude Code plugin:
 
 ```
-/plugin marketplace add milock/polysearch
+/plugin marketplace add milock/polysearch-ai
 /plugin install polysearch
 ```
 
