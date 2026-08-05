@@ -255,8 +255,12 @@ async def test_tier0_run_notes_every_downgraded_layer(tmp_output_dir):
 
     # No synthesizer ran; the report still saves (degraded, not a crash).
     assert report.synthesis_md == ""
-    files = list(tmp_output_dir.glob("*.md")) + list(tmp_output_dir.glob("*.json"))
+    files = list(tmp_output_dir.glob("*.md")) + [
+        p for p in tmp_output_dir.glob("*.json") if not p.name.endswith(".done.json")
+    ]
     assert len(files) == 2
+    # Completion sentinel sits next to the report (see polysearch.run_status).
+    assert list(tmp_output_dir.glob("*.done.json"))
 
     joined = " | ".join(report.pipeline_errors)
     assert "PERPLEXITY_API_KEY not set" in joined  # research null reason
@@ -278,7 +282,9 @@ async def test_full_mock_standard_run_writes_report_and_refines(
     )
 
     md_files = list(tmp_output_dir.glob("*.md"))
-    json_files = list(tmp_output_dir.glob("*.json"))
+    json_files = [
+        p for p in tmp_output_dir.glob("*.json") if not p.name.endswith(".done.json")
+    ]
     assert len(md_files) == 1 and len(json_files) == 1
 
     assert "42%" in report.synthesis_md

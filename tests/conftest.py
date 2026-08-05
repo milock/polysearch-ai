@@ -44,6 +44,22 @@ def _isolate_ratelimit_ledger(
 
 
 @pytest.fixture(autouse=True)
+def _isolate_run_manifests(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point run-status manifests at a temp dir for every test.
+
+    ``run_research`` writes a heartbeat manifest via ``run_status.runs_dir()``
+    (default ``~/.cache/polysearch/runs/``). Redirect it per-test so the suite
+    never touches the real cache and stays hermetic.
+    """
+    from polysearch import run_status
+
+    runs = tmp_path_factory.mktemp("runs")
+    monkeypatch.setattr(run_status, "runs_dir", lambda: runs)
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stop ``Settings.from_env`` from loading a developer's ``.env`` during tests.
 

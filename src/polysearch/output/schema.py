@@ -143,3 +143,8 @@ class PipelineReport(BaseModel):
     refinement_iterations: list[RefinementTrace] = []
     pipeline_errors: list[str] = []
     totals: dict[str, Any] = {}
+    # Populated by the orchestrator after a successful write (write=True) —
+    # where the report landed on disk. The completion sentinel lives next to
+    # output_md_path as <stem>.done.json (see polysearch.run_status).
+    output_md_path: str | None = None
+    output_json_path: str | None = None

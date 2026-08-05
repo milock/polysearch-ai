@@ -4,6 +4,28 @@ All notable changes to this project will be documented here. Format loosely base
 
 ## [Unreleased]
 
+### Added
+- **Machine-readable completion signal** (`polysearch/run_status.py`), so
+  orchestrators and agent harnesses get a declared "done" instead of inferring
+  it from prose or file-spotting:
+  - `<report>.done.json` sentinel written next to the report on every exit —
+    `status: "complete"` after the atomic save (with `output_path`,
+    `report_bytes`, `phases_completed`, `pipeline_error_count`,
+    `total_cost_usd`), `status: "failed"` + `error` when the run raises or is
+    interrupted. Stale sentinels are cleared at run start. The
+    `--synthesize-parallel` rollup writes the same sentinel next to its
+    `-synthesis.md`.
+  - Heartbeat run manifest at `~/.cache/polysearch/runs/<run-id>.json` — phase
+    updated at each boundary (first-pass → synthesis → verification → recovery
+    → refinement → saving → done) plus a ~30s heartbeat, so
+    queued-vs-dead-vs-finished is a file read.
+  - Deterministic CLI stdout: last line is `RESULT: <md_path>` or
+    `FAILED: <reason>`.
+  - `PipelineReport.output_md_path` / `output_json_path` — where the report
+    landed on disk when `write=True` (previously discarded internally).
+- Hermetic autouse test fixture isolating the run-manifest dir, mirroring the
+  existing rate-limit ledger isolation.
+
 ## [1.0.1] — 2026-07-17
 
 ### Fixed

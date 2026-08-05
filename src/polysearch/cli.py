@@ -11,6 +11,12 @@ short-circuit before any network:
 
 Exit codes: 0 success, 1 pipeline error (an unhandled failure during the run),
 2 usage error (missing ``--topic`` for a real run, or argparse rejecting input).
+
+Completion signal: the last stdout line of a real run is ``RESULT: <md_path>``
+on success or ``FAILED: <reason>`` on error, and a ``<report>.done.json``
+sentinel is written next to the report on every exit (see
+:mod:`polysearch.run_status`). Orchestrators gate on the sentinel, never on the
+``.md`` alone.
 """
 
 from __future__ import annotations
@@ -280,8 +286,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     except Exception as exc:  # noqa: BLE001 — top-level guard: map to exit code 1
         print(f"polysearch: pipeline error: {exc}", file=sys.stderr)
+        print(f"FAILED: {exc}")
         return 1
     _log_layer_durations(report)
+    # Deterministic machine-greppable last line — orchestrators gate on the
+    # <report>.done.json sentinel next to this path (see polysearch.run_status).
+    if report.output_md_path:
+        print(f"RESULT: {report.output_md_path}")
     return 0
 
 

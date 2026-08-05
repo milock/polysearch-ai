@@ -41,7 +41,8 @@ from polysearch.community.filter import evaluate_community
 from polysearch.community.fusion import fuse
 from polysearch.config import DEPTH_PROFILES, Settings
 from polysearch.extractors.claims import extract_claims
-from polysearch.output.report import write_report
+from polysearch.output.report import slugify, write_report
+from polysearch.run_status import RunManifest, clear_sentinel, write_sentinel
 from polysearch.output.schema import (
     Claim,
     LayerOutput,
@@ -269,9 +270,104 @@ async def run_research(
     loop is skipped outright below a small floor of remaining time, and bounded
     for its own duration once started, rather than running unbounded to
     completion.
+
+    **Completion signal.** Every run maintains a heartbeat-bearing manifest at
+    ``~/.cache/polysearch/runs/<run-id>.json`` (phase + ``heartbeat_at``, so
+    orchestrators can distinguish queued from dead), and — when ``write`` is
+    set — leaves a ``<report>.done.json`` sentinel next to the report on exit:
+    ``status: "complete"`` after the atomic save, ``status: "failed"`` when the
+    run raises. Gate on the sentinel, never on the ``.md`` alone (see
+    :mod:`polysearch.run_status`). The written paths are exposed on the report
+    as ``output_md_path`` / ``output_json_path``.
     """
-    started = time.perf_counter()
     settings = settings or Settings.from_env()
+
+    # Expected report path — used for the failure sentinel when the run dies
+    # before (or during) the write. The success sentinel uses the actual paths.
+    expected_md: Path | None = None
+    if write:
+        out_dir = Path(output_dir) if output_dir is not None else settings.output_dir
+        expected_md = (
+            Path(out_dir).expanduser().resolve()
+            / f"{time.strftime('%Y-%m-%d')}-{slugify(topic)}.md"
+        )
+        clear_sentinel(expected_md)
+
+    manifest = RunManifest.create(topic=topic, depth=depth, output_path=expected_md)
+    heartbeat = asyncio.create_task(manifest.heartbeat_loop())
+    try:
+        report = await _run_research_inner(
+            topic,
+            depth=depth,
+            settings=settings,
+            providers=providers,
+            person_hook=person_hook,
+            enabled_layers=enabled_layers,
+            verify=verify,
+            recovery=recovery,
+            verify_budget=verify_budget,
+            deep_research=deep_research,
+            max_iterations=max_iterations,
+            output_dir=output_dir,
+            write=write,
+            time_budget_s=time_budget_s,
+            manifest=manifest,
+        )
+    except (Exception, KeyboardInterrupt) as exc:
+        reason = (
+            "interrupted (SIGINT)"
+            if isinstance(exc, KeyboardInterrupt)
+            else f"{type(exc).__name__}: {exc}"
+        )
+        if expected_md is not None:
+            write_sentinel(
+                expected_md,
+                status="failed",
+                started_at=manifest.started_at,
+                exit_code=130 if isinstance(exc, KeyboardInterrupt) else 1,
+                phases_completed=manifest.phases_completed,
+                error=reason,
+            )
+        manifest.finish("failed", error=reason)
+        raise
+    finally:
+        heartbeat.cancel()
+
+    if write and report.output_md_path:
+        write_sentinel(
+            report.output_md_path,
+            status="complete",
+            started_at=manifest.started_at,
+            exit_code=0,
+            phases_completed=manifest.phases_completed + ["saving"],
+            json_path=report.output_json_path,
+            total_cost_usd=report.totals.get("cost_usd"),
+            pipeline_error_count=len(report.pipeline_errors),
+        )
+    manifest.finish("complete")
+    return report
+
+
+async def _run_research_inner(
+    topic: str,
+    *,
+    depth: str,
+    settings: Settings,
+    providers: Providers | None,
+    person_hook: Any | None,
+    enabled_layers: set[str] | None,
+    verify: bool,
+    recovery: bool,
+    verify_budget: float | None,
+    deep_research: bool,
+    max_iterations: int | None,
+    output_dir: Path | str | None,
+    write: bool,
+    time_budget_s: float | None,
+    manifest: RunManifest,
+) -> PipelineReport:
+    """The actual pipeline body — see :func:`run_research` for the contract."""
+    started = time.perf_counter()
     if providers is None:
         providers = build_providers(settings)
 
@@ -287,6 +383,7 @@ async def run_research(
     if depth not in DEPTH_PROFILES:
         depth = "standard"
     profile = DEPTH_PROFILES[depth]
+    manifest.update_phase("first-pass")
 
     pipeline_errors: list[str] = []
     layers: list[LayerOutput] = []
@@ -431,6 +528,7 @@ async def run_research(
                 )
 
     # ── First-pass synthesis ─────────────────────────────────────────────────
+    manifest.update_phase("synthesis")
     synthesis_md = ""
     synth_cost = 0.0
     try:
@@ -515,6 +613,7 @@ async def run_research(
         _add_claims(extract_claims(f"{fact.value}. {fact.context}", [fact.source_url]))
 
     # ── Verification ─────────────────────────────────────────────────────────
+    manifest.update_phase("verification")
     verification = None
     vbudget = verify_budget if verify_budget is not None else profile.verify_budget_usd
     if verify and claims:
@@ -537,6 +636,7 @@ async def run_research(
             pipeline_errors.append(f"verifier: {reason}")
 
     # ── Recovery pass (automated sonar-pro rescue) ───────────────────────────
+    manifest.update_phase("recovery")
     recovery_ran = False
     if recovery and verification is not None and should_recover(verification, settings):
         recovery_start = time.perf_counter()
@@ -593,6 +693,7 @@ async def run_research(
         )
 
     # ── Goal-driven refinement loop (Task 17) ────────────────────────────────
+    manifest.update_phase("refinement")
     refine_profile = profile
     if max_iterations is not None:
         refine_profile = replace(profile, max_refinement_iterations=max(0, max_iterations))
@@ -677,11 +778,14 @@ async def run_research(
     )
 
     if write:
+        manifest.update_phase("saving")
         out_dir = Path(output_dir) if output_dir is not None else settings.output_dir
         # A null synthesizer (missing credential) is an expected degraded mode, not
         # a bug — let the placeholder-bearing report save rather than refusing it.
         write_settings = settings if synthesis_md.strip() else replace(settings, allow_placeholders=True)
-        write_report(report, output_dir=out_dir, settings=write_settings)
+        md_path, json_path = write_report(report, output_dir=out_dir, settings=write_settings)
+        report.output_md_path = str(md_path)
+        report.output_json_path = str(json_path)
 
     return report
 
@@ -760,9 +864,11 @@ async def run_parallel_synthesis(
     success, 1 when no sub-reports match or all fail to read.
     """
     import sys
+    from datetime import datetime
 
     settings = settings or Settings.from_env()
     out_dir = Path(output_dir).expanduser().resolve()
+    started_at = datetime.now().isoformat(timespec="seconds")
 
     matches = sorted(_glob.glob(glob_pattern))
     sub_paths = [Path(p) for p in matches if not p.endswith("-synthesis.md")]
@@ -771,6 +877,7 @@ async def run_parallel_synthesis(
             f"polysearch: parallel synthesis matched no reports for {glob_pattern!r} "
             "(excluding *-synthesis.md)\n"
         )
+        print(f"FAILED: no reports matched {glob_pattern!r}")
         return 1
 
     bodies: list[tuple[str, str]] = []
@@ -781,6 +888,7 @@ async def run_parallel_synthesis(
             sys.stderr.write(f"polysearch: skipping {path.name}: {exc}\n")
     if not bodies:
         sys.stderr.write("polysearch: parallel synthesis — all candidates failed to read\n")
+        print("FAILED: all sub-report candidates failed to read")
         return 1
 
     body, cost = await _cross_report_synthesize(bodies, settings=settings)
@@ -788,6 +896,7 @@ async def run_parallel_synthesis(
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = time.strftime("%Y-%m-%d") + "-cross-report"
     out_path = out_dir / f"{stem}-synthesis.md"
+    clear_sentinel(out_path)
 
     header = (
         f"# Cross-report synthesis\n\nSub-reports: {len(bodies)} | "
@@ -802,7 +911,16 @@ async def run_parallel_synthesis(
         f"- {name}" for name, _ in bodies
     )
     out_path.write_text(header + body + index + "\n", encoding="utf-8")
+    write_sentinel(
+        out_path,
+        status="complete",
+        started_at=started_at,
+        exit_code=0,
+        phases_completed=["parallel-synthesis"],
+        total_cost_usd=cost,
+    )
     sys.stderr.write(f"polysearch: cross-report synthesis written: {out_path}\n")
+    print(f"RESULT: {out_path}")
     return 0
 
 

@@ -151,6 +151,8 @@ polysearch --topic "..." [options]
 
 Synthesizer auto-resolution: if both `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are set, OpenAI is used (cheaper). If only one is set, that one is used. If neither, synthesis is skipped and the report carries the raw layer outputs with a note.
 
+**Completion signal (for orchestrators).** The last stdout line of a real run is `RESULT: <md_path>` on success or `FAILED: <reason>` on error, and a `<report>.done.json` sentinel is written next to the report on every exit — `status: "complete"` after the atomic save, `status: "failed"` when the run dies. Gate automation on the sentinel, never on the `.md` alone (a report file can exist half-written). A heartbeat-bearing run manifest at `~/.cache/polysearch/runs/<run-id>.json` (phase + `heartbeat_at`, ~30s updates) distinguishes queued-at-the-rate-limiter from dead: fresh heartbeat = alive; dead PID + stale heartbeat + no sentinel = dead. See `polysearch/run_status.py`.
+
 ---
 
 ## Cost by depth
